@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"workbuddy.local/workbuddy-api/internal/storage"
 )
@@ -68,6 +69,50 @@ type secrets struct {
 type Persister struct {
 	path  string
 	codec storage.Codec
+
+	// saveMu 串行化**整条保存链**：取快照 → 编码 → 序列化 → 原子替换。
+	//
+	// 🔴 为什么必须有它（R2「保存顺序」，2026-10-07 保留项，现修）：
+	//
+	//	`Save` 在**锁内**取快照（`ListSnapshots`），但锁在 `MarshalIndent`
+	//	与 `AtomicWrite` **之前**就释放了。于是两次并发 Save 可以这样交错：
+	//
+	//	  goroutine A: 快照含账号 X(v1) ────── 序列化 ────── 写盘(含 X)  ← 最后落盘
+	//	  goroutine B:     快照 X 已删除 ── 序列化 ── 写盘(不含 X)
+	//
+	//	⇒ 磁盘上留下的是 **A 的旧快照**：已删除的账号（或旧凭据）**复活**。
+	//	  它比"单次响应错误"严重得多 —— 会在**下次启动时被读回**，
+	//	  即竞争被"固化"成持久状态。
+	//
+	// 🔴 为什么锁必须覆盖**整条链**，而不是只保护最后那次 rename：
+	//
+	//	只给替换加锁，两次 Save 仍会以**任意顺序**完成写盘 ——
+	//	后拿到锁的那次未必是后取快照的那次。真正要保的性质是
+	//	「**写盘顺序 == 取快照顺序**」，所以从取快照起就得持锁。
+	//
+	// ⚠️ 锁序（不会死锁，勿改）：
+	//
+	//	Save 的持锁顺序恒为 saveMu → Store.mu（`ListSnapshots` 内部取 Store.mu），
+	//	而**没有任何路径**在持 Store.mu 时调用 Save
+	//	（所有调用方都是「先 Mutate 返回、再调 Save」）。
+	//	⇒ 不存在反向持锁，故无死锁。
+	//	**若将来有人把 Save 写进 Mutate 回调里，会立刻自死锁**
+	//	（Store.mu 是非可重入的），这一点有测试守着。
+	saveMu sync.Mutex
+
+	// saveHook 是**仅测试用**的确定性插桩点。
+	//
+	// 在"取完快照、尚未写盘"之间调用一次，用来**受控地**制造
+	// 「两次 Save 的写盘顺序 vs 取快照顺序」这种交错。
+	//
+	// 🔴 为什么必须是插桩而不是"真并发跑很多次"：
+	//
+	//	真并发靠"恰好交错"，实测极不稳定（本仓库已有先例：
+	//	`race_demo_test.go` 的注释记录了 8/4073 与 0 次的抖动）。
+	//	不稳的护栏等于没有护栏。插桩让交错**必然发生**。
+	//
+	// ⚠️ 生产代码路径上恒为 nil，故零开销、零行为变化。
+	saveHook func()
 }
 
 // NewPersister 创建持久化器。
@@ -143,11 +188,30 @@ func (p *Persister) Load() (*Store, error) {
 // ⚠️ 这**不**保证"磁盘内容等于某个确定时刻的全局状态"（多个账号之间
 // 仍可能来自略微不同的时刻），但**保证每个账号自身的字段组合自洽** ——
 // 那正是会产生损坏数据的那一面。
+//
+// 🔴 2026-10-07 修 R2「保存顺序」（排序问题，与上面的自洽性是两件事）：
+//
+//	自洽的快照 ≠ **有序的落盘**。两次并发 Save 各自拿到自洽快照，
+//	但可能**较旧的那份最后写盘**，于是已删除的账号/旧凭据复活。
+//	现在整条链（取快照→编码→序列化→替换）都在 `saveMu` 内串行执行，
+//	保证**写盘顺序 == 取快照顺序**。详见 Persister.saveMu 的注释。
 func (p *Persister) Save(st *Store) error {
+	// 🔴 必须从这里就开始持锁 —— 快照的**先后**决定了落盘的先后。
+	//    若在锁外取快照、只在写盘时加锁，两次 Save 仍可能乱序完成。
+	p.saveMu.Lock()
+	defer p.saveMu.Unlock()
+
 	df := diskFile{Version: accountsFileVersion}
 
 	// 锁内值拷贝 —— 不拿共享指针
 	snaps := st.ListSnapshots()
+
+	// 确定性插桩（仅测试置位）：此时快照已取、尚未写盘。
+	// 这是"较旧快照被较新写入抢先"这一交错的关键窗口。
+	if p.saveHook != nil {
+		p.saveHook()
+	}
+
 	for i := range snaps {
 		da, err := p.encode(&snaps[i])
 		if err != nil {
