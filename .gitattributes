@@ -1,0 +1,16 @@
+# Go 源码一律 LF
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+# Windows 脚本保留 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# 二进制
+*.exe binary
+*.png binary

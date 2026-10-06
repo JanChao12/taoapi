@@ -1,0 +1,198 @@
+{
+    "_meta":  {
+                  "note":  "从真实上游响应裁剪，仅保留代表模型用于 fake upstream 测试；含 1 个抽象档位用于验证其被砍掉",
+                  "source":  "https://www.workbuddy.ai/v2/enterprises/personal/models",
+                  "capturedAt":  "2026-10-06",
+                  "originalCount":  18,
+                  "fieldsPerModel":  13,
+                  "note2":  "国际版单条模型只有 13 个字段，且没有 tags/reasoning/contextWindow/onlyReasoning（与国内版不同）",
+                  "note3":  "gpt-5.3-codex 刻意保留：它**只存在于 /v2**（/v3/config 的 22 条里没有），用于守住合并必须取并集"
+              },
+    "code":  0,
+    "msg":  "ok",
+    "data":  {
+                 "agents":  [
+                                {
+                                    "name":  "cli",
+                                    "tags":  [
+                                                 "default"
+                                             ],
+                                    "models":  [
+                                                   "default-model",
+                                                   "glm-5.3",
+                                                   "glm-5.2",
+                                                   "gpt-5.3-codex",
+                                                   "hy3",
+                                                   "hy4-preview",
+                                                   "kimi-k3",
+                                                   "kimi-k2.6",
+                                                   "gpt-5.6-luna",
+                                                   "gpt-6-astra"
+                                               ]
+                                },
+                                {
+                                    "name":  "compact",
+                                    "tags":  [],
+                                    "models":  []
+                                }
+                            ],
+                 "modelPromotions":  [
+                                         {
+                                             "id":  "hy3-free-trial-202608",
+                                             "kind":  "discount",
+                                             "enabled":  true,
+                                             "modelIds":  [
+                                                              "hy3"
+                                                          ],
+                                             "priority":  200,
+                                             "badge":  {
+                                                           "color":  "#FF0000",
+                                                           "display":  "activeOnly",
+                                                           "label":  "Free now"
+                                                       },
+                                             "discount":  {
+                                                              "discountedCredits":  "0x",
+                                                              "displayMode":  "replace",
+                                                              "factor":  0
+                                                          },
+                                             "hover":  {
+                                                           "textZh":  "Aug 6 – Sep 30: Free daily use with unlimited credits."
+                                                       },
+                                             "schedule":  {
+                                                              "timezone":  "Asia/Shanghai",
+                                                              "validFrom":  "2026-07-06T00:00:00+08:00",
+                                                              "validUntil":  "2026-09-30T00:00:00+08:00"
+                                                          }
+                                         }
+                                     ],
+                 "models":  [
+                                {
+                                    "credits":  "x0.79 credits",
+                                    "descriptionEn":  "Excellent coding model, great for daily use",
+                                    "descriptionZh":  "优秀的编码模型，适合日常使用",
+                                    "id":  "default-model",
+                                    "isDefault":  true,
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  24000,
+                                    "name":  "Auto",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "e"
+                                },
+                                {
+                                    "credits":  "x0.79",
+                                    "descriptionEn":  "Flagship model for complex engineering",
+                                    "descriptionZh":  "旗舰模型，擅长复杂软件工程",
+                                    "id":  "glm-5.3",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  48000,
+                                    "name":  "GLM-5.3",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "z"
+                                },
+                                {
+                                    "credits":  "x0.79",
+                                    "descriptionEn":  "Balanced model",
+                                    "descriptionZh":  "均衡模型",
+                                    "id":  "glm-5.2",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  48000,
+                                    "name":  "GLM-5.2",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "z"
+                                },
+                                {
+                                    "credits":  "x1.25",
+                                    "descriptionEn":  "Codex model for coding tasks",
+                                    "descriptionZh":  "面向编码任务的 Codex 模型",
+                                    "id":  "gpt-5.3-codex",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  72000,
+                                    "name":  "GPT-5.3-Codex",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "o"
+                                },
+                                {
+                                    "credits":  "x0.00",
+                                    "descriptionEn":  "Free tier model",
+                                    "descriptionZh":  "免费模型",
+                                    "id":  "hy3",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  64000,
+                                    "name":  "Hy3",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "t"
+                                },
+                                {
+                                    "credits":  "x0.00",
+                                    "descriptionEn":  "Preview model",
+                                    "descriptionZh":  "预览模型",
+                                    "id":  "hy4-preview",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  64000,
+                                    "name":  "Hy4 preview",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "t"
+                                },
+                                {
+                                    "credits":  "x1.62",
+                                    "descriptionEn":  "Long-context model",
+                                    "descriptionZh":  "长上下文模型",
+                                    "id":  "kimi-k3",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  32000,
+                                    "name":  "Kimi-K3",
+                                    "supportsImages":  false,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "m"
+                                },
+                                {
+                                    "credits":  "x0.52",
+                                    "descriptionEn":  "Efficient model",
+                                    "descriptionZh":  "高效模型",
+                                    "id":  "kimi-k2.6",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  32000,
+                                    "name":  "Kimi-K2.6",
+                                    "supportsImages":  false,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "m"
+                                },
+                                {
+                                    "credits":  "x0.14",
+                                    "descriptionEn":  "Fast reasoning model",
+                                    "descriptionZh":  "快速推理模型",
+                                    "id":  "gpt-5.6-luna",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  128000,
+                                    "name":  "GPT-5.6-Luna",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "o"
+                                }
+                            ]
+             }
+}

@@ -1,0 +1,187 @@
+{
+  "_meta": {
+    "note": "假上游（fake upstream）测试样本集。全部取自 2026-10-04 直连 WorkBuddy 上游的真实响应，仅做脱敏与裁剪。",
+    "upstream": "https://copilot.tencent.com",
+    "billing": "https://www.codebuddy.cn",
+    "capturedAt": "2026-10-04",
+    "capturedBy": "direct-connection (绕过 wild-work 中间层)",
+    "sanitized": [
+      "accessToken 未写入任何 fixture",
+      "X-Machine-ID / X-Session-ID 未写入",
+      "fixture 内不含任何凭据"
+    ]
+  },
+  "fixtures": [
+    {
+      "file": "models-listing.json",
+      "endpoint": "GET https://copilot.tencent.com/v2/enterprises/personal/models",
+      "purpose": "假上游的模型目录响应；4 个代表模型（覆盖 4 种 reasoning 模式）",
+      "notes": "真实响应对应 31 个模型，此处裁剪为 4 个。字段名必须保持：maxInputTokens / maxOutputTokens / contextWindow.supportedLengths / reasoning.supportedEfforts / supportsImages / credits",
+      "assertions": [
+        "响应含 data.models 数组",
+        "每个模型有 id / maxInputTokens / maxOutputTokens",
+        "space-bunny 有 reasoning.supportedEfforts（5 档）",
+        "deepseek-v4.1-flash 无 supportedEfforts，只有 reasoning.effort=high"
+      ]
+    },
+    {
+      "file": "v1-models-exposed.json",
+      "endpoint": "GET http://127.0.0.1:PORT/v1/models  (我们对外暴露)",
+      "purpose": "断言反代对外暴露的模型列表形状",
+      "notes": "DSH 只读 id/name/contextWindow/maxTokens；reasoning_* 是扩展字段（DSH 忽略，其他客户端可能用）。context_length 必须取上游 maxInputTokens（最大值），不是 contextWindow.defaultLength（300000）",
+      "assertions": [
+        "所有 id 带 workbuddy/ 前缀",
+        "context_length = 1000000（最大值），而非 300000（默认档）",
+        "deepseek-v4.1-flash 的 reasoning_efforts 只有 off/high（实测是开关）",
+        "hunyuan-chat 的 reasoning_efforts 为空（非思考模型）"
+      ]
+    },
+    {
+      "file": "sse-deepseek-v4.1-flash-high.txt",
+      "endpoint": "POST https://copilot.tencent.com/v2/chat/completions",
+      "purpose": "最完整的一个：41 个 reasoning_content 分片 + 1 个 content 分片 + 末帧 usage",
+      "request": {
+        "model": "deepseek-v4.1-flash",
+        "reasoning_effort": "high",
+        "stream": true,
+        "stream_options": { "include_usage": true },
+        "max_tokens": 200
+      },
+      "measured": {
+        "totalDataLines": 45,
+        "reasoningContentChunks": 41,
+        "contentChunks": 1,
+        "reasoningChars": 70,
+        "reasoningTokens": 41,
+        "completionTokens": 43
+      },
+      "assertions": [
+        "必须能解析出 role → reasoning_content x41 → content x1 → usage → [DONE]",
+        "非流式聚合后 content 必须是 可用（不能因 41 个 reasoning 分片而丢失）",
+        "usage.completion_tokens_details.reasoning_tokens = 41",
+        "每个 delta 都含 content/reasoning_content/function_call/refusal/tool_calls/extra_fields 六个字段（空值为空字符串，不是省略字段）"
+      ]
+    },
+    {
+      "file": "sse-deepseek-noeffort.txt",
+      "endpoint": "同上，但不传 reasoning_effort",
+      "purpose": "证明「不传档位 = 完全不思考」",
+      "request": {
+        "model": "deepseek-v4.1-flash",
+        "reasoning_effort": null,
+        "stream": true,
+        "max_tokens": 300
+      },
+      "measured": {
+        "totalDataLines": 4,
+        "reasoningContentChunks": 0,
+        "reasoningChars": 0,
+        "reasoningTokens": 0,
+        "completionTokens": 1
+      },
+      "assertions": [
+        "reasoning_content 全程为空",
+        "usage.reasoning_tokens = 0",
+        "只有 4 个 data 行（对比 high 档的 45 行）"
+      ]
+    },
+    {
+      "file": "sse-space-bunny-max.txt",
+      "endpoint": "同上，model=space-bunny，effort=max",
+      "purpose": "平滑旋钮型模型的样本",
+      "request": { "model": "space-bunny", "reasoning_effort": "max", "stream": true, "max_tokens": 300 },
+      "measured": { "totalDataLines": 5, "reasoningChars": 92, "reasoningTokens": 25, "completionTokens": 26 }
+    },
+    {
+      "file": "sse-glm-5.3-max.txt",
+      "endpoint": "同上，model=glm-5.3，effort=max",
+      "purpose": "max 突变型模型的样本（35 个分片，思维链 499 字符）",
+      "request": { "model": "glm-5.3", "reasoning_effort": "max", "stream": true, "max_tokens": 300 },
+      "measured": { "totalDataLines": 35, "reasoningChars": 499, "reasoningTokens": 116, "completionTokens": 119 }
+    },
+    {
+      "file": "chat-completion-aggregated.json",
+      "purpose": "反代应产出的非流式响应形状（由 SSE 聚合而来）",
+      "assertions": [
+        "choices[0].message.content = 可用",
+        "choices[0].message.reasoning_content 必须保留（OpenAI 规范外字段，但必须透传）",
+        "usage.completion_thinking_tokens 与 completion_tokens_details.reasoning_tokens 都要保留"
+      ]
+    },
+    {
+      "file": "billing-user-resource.json",
+      "endpoint": "POST https://www.codebuddy.cn/v2/billing/meter/get-user-resource",
+      "purpose": "额度查询真实响应",
+      "requestBody": {
+        "PageNumber": 1,
+        "PageSize": 100,
+        "ProductCode": "p_tcaca",
+        "Status": [0, 3],
+        "PackageEndTimeRangeBegin": "<now>",
+        "PackageEndTimeRangeEnd": "<now + 101 年>"
+      },
+      "notes": "是 POST 不是 GET。必须带 body，否则 404。",
+      "assertions": [
+        "data.Response.Data.Accounts 是数组",
+        "数组元素含 CapacityRemain / CapacityUsed / CapacitySize / CycleCapacityRemain / ExpiredTime",
+        "TotalDosage 为总剩余额度"
+      ]
+    },
+    {
+      "file": "billing-daily-checkin.json",
+      "endpoint": "POST https://www.codebuddy.cn/v2/billing/meter/daily-checkin",
+      "purpose": "签到响应（已签到场景）",
+      "requestBody": {},
+      "notes": "已签到返回 HTTP 400（空 body）。这不是错误，必须按「今日已签到」处理，不能报失败。真实成功响应需在明日首次签到时抓取。",
+      "assertions": [
+        "HTTP 400 + 空 body 判定为已签到，不视为失败",
+        "业务 code != 0 时按 msg 区分（wild-work 的实现方式）"
+      ]
+    }
+  ],
+  "reasoningModes": {
+    "_note": "核心测试矩阵：3 个模型对应 3 种不同模式，fake upstream 必须能分别断言",
+    "space-bunny": {
+      "mode": "knob",
+      "verified": ["low", "medium", "high", "xhigh", "max"],
+      "defaultFromUpstream": "max",
+      "evidence": "均值 44 / 53.7 / 61.7 / 79.7 / 83.7，严格单调；low 最大值 47 < xhigh 最小值 55，不重叠",
+      "fixture": "sse-space-bunny-max.txt"
+    },
+    "glm-5.3": {
+      "mode": "knob-low-flat",
+      "verified": ["low", "high", "max"],
+      "evidence": "low 中位 78 / high 中位 178 / max 中位 3232（跳 18 倍）",
+      "fixture": "sse-glm-5.3-max.txt"
+    },
+    "deepseek-v4.1-flash": {
+      "mode": "switch",
+      "verified": ["off", "high"],
+      "critical": "不传 reasoning_effort = 完全不思考（3/3 确认）。服务端必须显式注入默认 high。",
+      "evidence": "各档均值 178-257 随机排列；不传时 reasoning_tokens=0",
+      "fixtures": ["sse-deepseek-v4.1-flash-high.txt", "sse-deepseek-noeffort.txt"]
+    }
+  },
+  "protocolRules": {
+    "_note": "fake upstream 必须断言这些，缺一即测试失败",
+    "mustSend": {
+      "stream": true,
+      "headers": [
+        "Authorization: Bearer ...",
+        "X-User-Id",
+        "X-Machine-ID",
+        "X-Session-ID",
+        "User-Agent: CLI/2.63.2 CodeBuddy/2.63.2",
+        "X-IDE-Name: WorkBuddy",
+        "X-Product: WorkBuddy",
+        "Origin: https://www.codebuddy.cn"
+      ]
+    },
+    "mustNotSend": {
+      "X-Refresh-Token": "安全红线：chat 请求绝不能带",
+      "stream:false": "上游拒绝非流式，直接 400"
+    },
+    "streamShape": "role → reasoning_content(多) → content(少) → usage → [DONE]",
+    "deltaFields": ["content", "reasoning_content", "function_call", "refusal", "tool_calls", "extra_fields"]
+  }
+}

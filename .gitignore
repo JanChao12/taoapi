@@ -1,0 +1,71 @@
+# 编译产物
+/wbapi
+/wbapi.exe
+*.exe
+*.test
+*.out
+
+# 编辑器/系统产生的备份与交换文件
+#
+# ⚠️ 2026-10-05 实测教训：`wbapi.exe~`（PowerShell / 某些编辑器留下的
+# 备份文件，11.8MB）**不匹配上面的 `*.exe`** —— 因为它的结尾是 `~` 而不是
+# `.exe`，所以被 git 当成普通文件跟踪了。二进制绝不能进 git 历史
+# （会让仓库膨胀且无法回滚体积）。
+*~
+*.exe~*
+*.bak
+# ⚠️ 2026-10-06 实测教训：`*.bak` **匹配不到** `wbapi.exe.bak-20261006-0109`
+# —— 通配符不跨越 `.bak` 之后的额外后缀，只有**以 .bak 结尾**的文件才中招。
+# 而本项目 exe 备份习惯带时间戳后缀，于是 5 个 12MB 二进制一直以
+# "未跟踪"形态漂在工作区里（`git status` 每次都列出来，也容易被误提交）。
+# `*.bak*` 才覆盖得住 —— 与上面 `*.exe~*` 是同一类坑。
+*.bak*
+*.orig
+*.swp
+*.tmp
+
+# 凭据与运行时数据 —— 绝不入库
+/auths/
+/data/state.json
+/data/events/
+/data/reports/
+/accounts.json
+/accounts.json.tmp*
+*.token
+*.secret
+.env
+.env.*
+
+# 真实账号回归产物
+/serve.log
+/wbapi-report.html
+
+# 日志
+*.log
+/data/*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# 临时
+/tmp/
+*.tmp
+
+# CDP 验收截图产物（每次运行会重新生成）
+/docs/panel-dev/acceptance-out/
+
+# 🔴 CDP 探针的原始转储（cdp-login-probe.js 产出）
+#
+# 该文件虽是"只记字段名/长度"的设计，实测仍会带入**真实会话残留**：
+# 真实 OAuth state 串、真实 localStorage 键名、浏览器临时 profile 路径等。
+# 结论已由 docs/panel-dev/*.md 归档，原始 dump 不需要入库 ——
+# 曾经入库过一次并在上线前清理，这里加规则防止它再被 add 回来。
+/docs/panel-dev/probe-report.json
+/docs/panel-dev/probe-console.log
+
+# 临时提交信息文件（不要提交）
+COMMIT_MSG_TMP.txt

@@ -1,0 +1,272 @@
+/* wbapi 管理面板「设置」页样式 —— 手写，零依赖
+ *
+ * 追加块：只为本页（#page-settings）内的元素定义样式，全部类名/ID 以
+ * st- / .st- 开头，绝不覆盖 style.css 里已有的通用类（.panel / .btn / .tbl …），
+ * 也不改动任何既有页面。
+ *
+ * 设计语言沿用 style.css：
+ *   卡片  .panel（白底、10px 圆角、1px 阴影）
+ *   按钮  .btn / .btn-sm / .btn-primary（绿 #16a34a）
+ *   提示  .hint-text（#9aa1a9）、.badge（实心胶囊）
+ *   健康绿 #16a34a / #e7f6ec / #bfe6cd，警告橙 #d97706，危险红 #dc2626
+ */
+
+/* ══ 页面骨架 ══ */
+
+/* 「立即生效」/「需重启生效」标签：一眼看出改动什么时候起作用 */
+.st-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.st-chip-now { background: #e7f6ec; color: #15803d; border: 1px solid #bfe6cd; }
+.st-chip-later { background: #fff4e6; color: #b45309; border: 1px solid #fcd9a8; }
+
+/* 面板标题行右侧的标签组 */
+.st-head-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 每区一行「设置项」：左定宽标签 + 右侧内容 */
+.st-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f6f7f9;
+}
+.st-row:last-child { border-bottom: none; }
+.st-row-label {
+  flex: 0 0 96px;
+  padding-top: 3px;
+  font-size: 12px;
+  color: #8a9099;
+}
+.st-row-body { flex: 1; min-width: 0; }
+.st-row-body > .hint-text { display: block; margin-top: 5px; line-height: 1.7; }
+
+.st-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.st-hint-block { display: block; margin-top: 6px; }
+
+/* 值文本（密钥提示、监听地址、签到状态…） */
+.st-value {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2329;
+  word-break: break-all;
+}
+.st-value-plain { font-family: inherit; font-size: 13px; font-weight: 600; }
+.st-none { color: #b0b6bd; }
+
+/* 小字辅助信息（沿用 .hint-text 的观感，供块级使用） */
+.st-note { font-size: 11px; color: #a8aeb6; line-height: 1.7; }
+
+/* 二次确认弹窗的正文块（由 settings.js 动态生成） */
+.st-confirm { font-size: 13px; line-height: 1.8; color: #4a5058; }
+.st-confirm p { margin: 0 0 8px; }
+.st-confirm p:last-child { margin-bottom: 0; }
+
+/* ══ 提示条（沿用 .tip 的形状，补危险/警告两色） ══ */
+
+.st-tip {
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 0 0 10px;
+}
+.st-tip-danger {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  font-weight: 600;
+}
+.st-tip-warn { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+.st-tip-plain { background: #f7f8fa; color: #4a5058; border: 1px solid #eef0f3; }
+
+/* 危险行内强调（二次确认弹窗里用） */
+.st-danger-line { color: #b91c1c; font-weight: 600; }
+
+/* ══ 输入框 / 表单 ══ */
+
+.st-input {
+  padding: 5px 10px;
+  border: 1px solid #dfe2e7;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1f2329;
+  background: #fff;
+  min-width: 0;
+}
+.st-input:focus { outline: none; border-color: #16a34a; }
+.st-input:disabled { background: #f7f8fa; color: #a8aeb6; }
+
+.st-input-port { width: 110px; font-family: ui-monospace, Consolas, monospace; }
+.st-input-key { width: 320px; max-width: 100%; font-family: ui-monospace, Consolas, monospace; }
+.st-input-alias { width: 180px; font-family: ui-monospace, Consolas, monospace; }
+.st-input-target { width: 340px; max-width: 100%; font-family: ui-monospace, Consolas, monospace; }
+
+/* 字段级错误：占一行，不把按钮挤走 */
+.st-field-err {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #dc2626;
+  min-height: 0;
+}
+.st-field-err:empty { display: none; }
+
+/* 内联表单（新增映射 / 更换密钥） */
+.st-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.st-inline-form .st-label { font-size: 12px; color: #8a9099; }
+
+/* 接口密钥输入框（2026-10-06 两次缩短）。
+   委托方要求：「框太长了，最起码可以缩短一半，或者限制最大10位数」
+   → 后又要求「key的框可以再缩短一半」。
+   现在 130px（约最初的四分之一），配合 maxlength=10 足够显示完整值。 */
+.st-input-key {
+  font-family: Consolas, "Courier New", monospace;
+  width: 130px;
+  min-width: 0;       /* 允许在窄屏继续收缩 */
+}
+
+/* ══ 开关 ══ */
+
+.st-toggle {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex: none;
+  padding: 0;
+  border: 1px solid #dfe2e7;
+  border-radius: 999px;
+  background: #eef0f3;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.st-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,.2);
+  transition: transform .15s;
+}
+.st-toggle.on { background: #16a34a; border-color: #16a34a; }
+.st-toggle.on::after { transform: translateX(20px); }
+.st-toggle:disabled { opacity: .5; cursor: default; }
+.st-toggle:focus-visible { outline: 2px solid #86efac; outline-offset: 2px; }
+
+/* 开关旁的状态文字 */
+.st-toggle-state { font-size: 12px; color: #4a5058; }
+
+/* ══ 映射表 ══ */
+
+.st-alias-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) { .st-alias-wrap { grid-template-columns: 1fr; } }
+
+/* 两张表各自的标题行 */
+.st-sub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.st-sub-title { font-size: 12px; font-weight: 600; color: #4a5058; }
+
+.st-td-alias { width: 30%; }
+.st-td-target { width: 46%; word-break: break-all; }
+.st-td-act { width: 24%; text-align: right; white-space: nowrap; }
+/* 草稿表的「状态」列 */
+.st-td-state { width: 62px; }
+.st-td-del { color: #dc2626; font-size: 12px; }
+
+/* 草稿表整体压暗一档，与「已生效」的表区分开 */
+.st-draft .tbl th { color: #b0b6bd; }
+.st-draft .tbl td { color: #4a5058; }
+
+/* 模型只读下拉（表格放在可折叠的 .st-collapse 里） */
+.st-collapse { margin-top: 10px; border-top: 1px solid #f0f1f4; padding-top: 10px; }
+.st-collapse .tbl { max-height: 280px; display: block; overflow-y: auto; }
+.st-collapse .tbl thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
+
+/* datalist 的提示不可样式化，这里只给输入框一个统一的占位色 */
+.st-input::placeholder { color: #b0b6bd; }
+
+/* ══ 底部工具行 ══ */
+
+.st-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f1f4;
+}
+.st-foot-row .hint-text { margin-right: auto; }
+
+/* ══ toast（右下角，3 秒后自动消失；不引库） ══ */
+
+.st-toast {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 200;                 /* 高于 .overlay 的 100 */
+  max-width: 360px;
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #fff;
+  box-shadow: 0 6px 24px rgba(0,0,0,.18);
+  word-break: break-all;
+}
+.st-toast-ok { background: #16a34a; }
+.st-toast-bad { background: #dc2626; }
+
+/* 通用隐藏（本文件内使用；语义与 .page.hidden 无关） */
+.st-hidden { display: none !important; }
+
+/* ══ 窄屏 ══ */
+
+@media (max-width: 719px) {
+  .st-row { flex-direction: column; gap: 6px; }
+  .st-row-label { flex: none; padding-top: 0; }
+  .st-input-port, .st-input-alias, .st-input-target { width: 100%; }
+  .st-input-key { width: 100%; }
+  .st-toast { left: 14px; right: 14px; bottom: 14px; max-width: none; }
+}
+
+/* ══ 重启失败提示（持久） ══
+ *
+ * 与 toast 的区别：toast 几秒就消失，而"重启失败"是需要用户处理的状态。
+ * 提示必须**留在页面上**直到用户重新操作 —— 否则就是静默失败
+ * （Codex 第 20 轮指出：后端恢复可用 ≠ 用户知道重启失败了）。
+ *
+ * 用危险红 #dc2626（与 .st-toast-bad 同一色），让它一眼可辨。
+ */
+.st-restart-failed {
+  color: #dc2626;
+  font-weight: 600;
+}

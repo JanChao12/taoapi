@@ -1,0 +1,69 @@
+﻿data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"The","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" user is asking me to","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" reply with","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" only two Chinese","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" characters: \"可用\"","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" (which means \"available","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"\" or \"usable\").\n\n","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"This is a simple request","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":". The user wrote","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" in Chinese: \"只","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"回复两个字：可用\"","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" which means \"Only","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" reply with two characters:","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" 可用\"\n\nSo","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" they want me to respond","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" with just","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" \"可用\" and","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" nothing else.\n\nThis seems","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" like a harmless request -","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" perhaps they're testing something","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":", checking","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" if I'm","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" working, or setting","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" up some","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" kind of system. There","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"'s nothing problematic","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" about this.\n\n","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"I should simply","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" reply \"","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"可用\" as","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":" requested.","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"可用","reasoning_content":"","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":""}],"usage":null}
+
+data: {"id":"eee75e6e00fe4a7bae86221544296090","model":"glm-5.3","object":"chat.completion.chunk","created":1791121260,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"","function_call":{"name":"","arguments":""},"refusal":"","tool_calls":[],"extra_fields":null},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":17,"completion_tokens":119,"total_tokens":136,"completion_tokens_details":{"accepted_prediction_tokens":0,"audio_tokens":0,"reasoning_tokens":116,"rejected_prediction_tokens":0,"cached_tokens":0},"prompt_tokens_details":{"accepted_prediction_tokens":0,"audio_tokens":0,"reasoning_tokens":0,"rejected_prediction_tokens":0,"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":17,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"prompt_cache_write_tokens":0,"completion_thinking_tokens":116,"credit":0.07,"cached_tokens":0}}
+
+data: [DONE]

@@ -1,0 +1,829 @@
+/* wbapi 管理面板样式 —— 手写，零依赖 */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #f5f6f8;
+  color: #1f2329;
+}
+
+/* ══ 布局骨架：左侧栏 + 主区 ══ */
+
+.layout { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 180px;
+  flex: none;
+  background: #fff;
+  border-right: 1px solid #e5e7eb;
+  padding: 16px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; }
+.logo { font-size: 24px; }
+.title { font-size: 16px; font-weight: 600; }
+.ver { color: #8a9099; font-weight: 400; font-size: 12px; }
+.sub { font-size: 11px; color: #8a9099; }
+
+.side-nav { display: flex; flex-direction: column; gap: 4px; }
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #4a5058;
+  text-align: left;
+  white-space: nowrap;
+}
+.side-item:hover { background: #f3f4f6; }
+.side-item.active { background: #e7f6ec; color: #16a34a; font-weight: 600; }
+.side-item .ico { font-size: 15px; flex: none; }
+
+.side-foot { margin-top: auto; font-size: 11px; color: #a8aeb6; padding: 0 6px; word-break: break-all; }
+
+.main { flex: 1; min-width: 0; padding: 20px 24px 40px; }
+
+/* 窄屏：侧边栏折成顶部横条 */
+@media (max-width: 719px) {
+  .layout { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    border-right: none;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 10px 14px;
+  }
+  .side-nav { flex-direction: row; flex-wrap: wrap; }
+  .side-foot { display: none; }
+  .main { padding: 14px 14px 32px; }
+}
+
+/* ── 页面切换 ── */
+.page.hidden { display: none; }
+
+/* ── 页面工具栏 ── */
+.page-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.page-title { margin: 0; font-size: 17px; font-weight: 600; }
+.count-chip {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: #16a34a;
+  background: #e7f6ec;
+  border-radius: 999px;
+  padding: 1px 8px;
+  vertical-align: 2px;
+}
+.toolbar-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.btn {
+  padding: 6px 14px;
+  border: 1px solid #dfe2e7;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #4a5058;
+}
+.btn:hover:not(:disabled) { border-color: #b9c0c9; background: #f7f8fa; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-sm { padding: 4px 12px; font-size: 12px; }
+
+/* ── 提示条 ── */
+.tip { border-radius: 8px; padding: 8px 14px; font-size: 12px; margin-bottom: 12px; }
+.tip-green { background: #e7f6ec; color: #15803d; border: 1px solid #bfe6cd; }
+
+/* 警示条（数据不完整 / 写入不可用）。
+   与 .tip-green 同一观感，颜色改用琥珀色表示"需要注意但不是错误"。 */
+.tip-warn { background: #fef7e6; color: #92600a; border: 1px solid #f3dfae; }
+
+/* 信息类提示条（开机自启等）—— 与成功/警示条区分开：
+   蓝色表示"这是配置信息"，不是"操作成功"也不是"需要注意"。 */
+.tip-blue { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+
+/* 平台徽标（多平台：国内版 / 国际版）——
+   放在账号卡片名字左边，一眼区分账号属于哪个上游。
+   两版是**独立的池子**，混起来看会误判"为什么这个号没被用"。 */
+.plat-tag {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+/* 国际版用紫色区分 —— 与国内版的蓝色形成明显差异 */
+.plat-tag.plat-intl {
+  color: #7c3aed;
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+}
+
+/* 平台分组标签（模型列表上方，可切换）——
+   参照 wild-work 的做法：标题 + 数量，选中项高亮。
+   数量直接挂在标签上，切换前就能看出各平台有多少模型。 */
+.plat-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.plat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid #dfe2e7;
+  background: #fff;
+  border-radius: 999px;
+  font-size: 13px;
+  color: #4a5058;
+  cursor: pointer;
+}
+.plat-tab:hover { border-color: #b9c0c9; background: #f7f8fa; }
+.plat-tab.active {
+  border-color: #16a34a;
+  background: #f2fbf5;
+  color: #15803d;
+  font-weight: 600;
+}
+/* 分组标签上的模型数徽标 */
+.plat-count {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #eef0f3;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.plat-tab.active .plat-count {
+  background: #16a34a;
+  color: #fff;
+}
+
+/* 用量统计页的三个面板标签（互斥切换，一次只显示一个）——
+   与「模型列表」的平台分组是不同的东西：那是筛选，这是面板切换。
+   视觉上做成更"重"的按钮，避免用户误以为是筛选条件。 */
+.panel-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #eef0f3;
+}
+.panel-tab {
+  padding: 8px 18px;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: #6b7280;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.panel-tab:hover { color: #3d4450; }
+.panel-tab.active {
+  color: #16a34a;
+  font-weight: 600;
+  border-bottom-color: #16a34a;
+}
+
+/* 调用记录的状态标签 ——
+   三态分开：成功 / 已断开（非故障）/ 失败。
+   "客户端断开"不算服务端故障，颜色必须区别于失败，否则失败率看着虚高。 */
+.log-ok   { color: #15803d; font-weight: 600; }
+.log-warn { color: #92600a; font-weight: 600; }
+.log-bad  { color: #dc2626; font-weight: 600; }
+
+/* 调用记录表较宽（9 列），窄屏允许横向滚动而不是挤爆布局 */
+#usage-log-table { min-width: 900px; }
+#usage-log-table td.mono { white-space: nowrap; }
+
+/* 分页条（模型用量 / 账号用量 / 调用记录三个列表共用）——
+   一页装得下时整个隐藏（单个页码是噪音）。 */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.pg-btn {
+  padding: 4px 12px;
+  border: 1px solid #dfe2e7;
+  background: #fff;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #4a5058;
+  cursor: pointer;
+}
+.pg-btn:hover:not(:disabled) { border-color: #b9c0c9; background: #f7f8fa; }
+.pg-btn:disabled { opacity: .45; cursor: default; }
+.pg-info { color: #6b7280; }
+
+/* 侧边栏左下角：运行时间与渠道**分两行**（委托方要求）。
+   原来挤一行，渠道名一长就折断到难看的位置。 */
+.side-foot { line-height: 1.7; }
+.side-foot .foot-uptime { color: #6b7280; }
+.side-foot .foot-channels { color: #9aa1a9; font-size: 11px; word-break: break-all; }
+
+/* 「API 接入」页：地址与密钥**并排**（委托方要求"key 放到接口地址的右边"）——
+   两项是配客户端时必须同时填的，并排便于对照。窗口窄时自动换行。 */
+.api-base-row { flex-wrap: wrap; }
+.api-label-gap { margin-left: 18px; }
+
+/* 通用隐藏类：只控制 .page 的那个不够用（警示条等非页面元素也要能隐藏）。
+   用 !important 是刻意的 —— 这些元素可能带 display 的其它规则，
+   而"隐藏"必须是确定的，不能被样式顺序影响。 */
+.hidden { display: none !important; }
+
+/* ══ 模型列表：前缀提示 + 倍率 + 运营标签 ══ */
+
+/* 前缀提示条：表格里的模型 ID 省略了前缀，但调用时必须带 ——
+   不写清楚用户会照着表格去调用然后报"模型不存在"。 */
+.api-prefix-note {
+  font-size: 12px;
+  color: #5b6169;
+  background: #f7f8fa;
+  border: 1px solid #eef0f3;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  line-height: 1.7;
+}
+.api-prefix-note code {
+  background: #fff;
+  border: 1px solid #e0e3e8;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+}
+
+/* 倍率：三种形态三种颜色（unknown / Free / x0.xx） */
+.credits-x { color: #4a5058; font-variant-numeric: tabular-nums; }
+.credits-free {
+  color: #15803d;
+  font-weight: 600;
+  background: #e7f6ec;
+  border: 1px solid #bfe6cd;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+/* unknown = 上游未定价。用灰色（而不是绿色）——
+   绝不能和 Free 同色，那会让人以为不花钱。 */
+.credits-unknown {
+  color: #8a9099;
+  font-size: 11px;
+  background: #f2f3f5;
+  border: 1px solid #e6e8eb;
+  border-radius: 999px;
+  padding: 1px 8px;
+  cursor: help;
+}
+
+/* 上游下发的运营标签（如「限时免费」「夜间折扣」）——
+   颜色由内联 style 提供（上游决定），这里只管形状。 */
+.model-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* ══ 用量统计（沿用原有观感） ══ */
+
+.tabs { display: flex; gap: 8px; margin: 0 0 14px; }
+.tab {
+  padding: 6px 18px;
+  border: 1px solid #dfe2e7;
+  background: #fff;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #4a5058;
+}
+.tab:hover { border-color: #b9c0c9; }
+.tab.active { background: #1f2329; border-color: #1f2329; color: #fff; }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.card-label { font-size: 12px; color: #8a9099; }
+.card-value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+.card-sub { font-size: 11px; color: #d4380d; margin-top: 2px; }
+
+.panel {
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-top: 14px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.panel h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: #4a5058; }
+
+.grid2 {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(300px, 1.4fr);
+  gap: 14px;
+}
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th {
+  text-align: left;
+  font-weight: 500;
+  color: #8a9099;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eef0f3;
+  white-space: nowrap;
+}
+.tbl td { padding: 7px 8px; border-bottom: 1px solid #f6f7f9; }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+.tbl .empty { text-align: center; color: #b0b6bd; padding: 22px; }
+.bar-col { width: 22%; }
+
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+.bar { height: 8px; background: #eef0f3; border-radius: 4px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: #1f2329; border-radius: 4px; }
+
+/* 缓存命中率环 —— 纯 CSS conic-gradient，无依赖 */
+.hit-wrap { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.donut {
+  --pct: 0;
+  width: 96px; height: 96px;
+  border-radius: 50%;
+  background: conic-gradient(#16a34a calc(var(--pct) * 1%), #eef0f3 0);
+  display: flex; align-items: center; justify-content: center;
+  flex: none;
+}
+.donut > span {
+  width: 72px; height: 72px;
+  background: #fff;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 600;
+}
+.hit-detail { font-size: 12px; color: #4a5058; line-height: 1.9; }
+.hit-detail b { font-weight: 600; }
+.hit-detail .dot {
+  display: inline-block; width: 7px; height: 7px;
+  border-radius: 50%; margin-right: 6px; vertical-align: 1px;
+}
+.dot.green { background: #16a34a; }
+.dot.gray  { background: #b0b6bd; }
+
+/* ══ API 接入页 ══ */
+
+.api-base-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.api-base {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+  color: #1664ff;
+  background: #f0f5ff;
+  padding: 4px 10px;
+  border-radius: 6px;
+  word-break: break-all;
+}
+.api-meta { margin-top: 10px; font-size: 12px; color: #4a5058; }
+.api-meta b { font-weight: 600; }
+
+.effort-tag {
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 0 7px;
+  margin: 1px 3px 1px 0;
+  border-radius: 5px;
+  background: #f3f4f6;
+  color: #4a5058;
+  white-space: nowrap;
+}
+.effort-tag.def { background: #e7f6ec; color: #15803d; font-weight: 600; }
+
+/* ══ 账号卡片 ══ */
+
+.acct-grid {
+  display: grid;
+  /* 一行 3 个（委托人 2026-10-05 要求"一行能显示 3 个"）：
+     用固定 1fr 三列，不用 auto-fit —— auto-fit 会随窗口宽度塞进 4、5 列，
+     卡片反而更窄；固定 3 列才能保证每张卡片宽度一致、整齐。
+     历史：曾用 flex + flex:1 1 calc(50%-7px)，独占整行的第 3 张被拉伸到 100%
+     （委托人反馈"第三个账号自动拉长了"），已改 grid。 */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;   /* 卡片高度各自自适应，不被同行最高的拉齐 */
+}
+.acct-card {
+  min-width: 0;         /* 允许 grid 子项收缩，避免长包名撑破列宽 */
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.acct-card-disabled { opacity: .62; }
+
+/* 窄屏逐级降列：3 → 2 → 1。卡片内容较多（余额+包列表+按钮），
+   太窄会挤成竖排，所以留足断点。 */
+@media (max-width: 1100px) {
+  .acct-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .acct-grid { grid-template-columns: 1fr; }
+}
+
+.acct-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;      /* 一行 3 个后卡头更窄，必要时换行而不是挤爆 */
+}
+/* 卡头右侧的徽章成组，避免被 wrap 拆散 */
+.acct-head .badge { flex: 0 0 auto; }
+
+/* 上游报错（如「上游限流」）—— 名字右侧的红色小徽标。
+   🔴 为什么放这里而不是单独一行（2026-10-06 委托方反馈）：
+     原来是整行 <div>，文案一长就把卡片撑得比同排的宽，中间那张凸出来很难看。
+     放进卡头后宽度由内容列决定，不再受文案长度影响。
+   为什么标红：它是"这个号现在不好使"的信号，需要一眼看到 ——
+     与右侧绿色「正常」不矛盾（那个说的是账号健康度，这个说的是最近一次调用的报错）。 */
+.acct-err {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acct-name {
+  flex: 0 1 auto;
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 状态徽章（沿用原配色） */
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #fff;
+  white-space: nowrap;
+}
+.badge-normal       { background: #16a34a; }
+.badge-rate_limited { background: #d97706; }
+.badge-banned       { background: #dc2626; }
+.badge-auth_expired { background: #dc2626; }
+.badge-disabled     { background: #6b7280; }
+.badge-no_credit    { background: #ca8a04; }
+.badge-transient    { background: #64748b; }
+
+/* 「反代使用中」徽章：描边样式，与实心状态徽章区分开，
+   避免用户把"正在用"误读成一种状态 */
+.badge-inuse {
+  background: #ecfdf5;
+  color: #15803d;
+  border: 1px solid #86efac;
+  font-weight: 600;
+}
+/* 正在使用的账号卡片：左侧绿色竖条，扫一眼就能找到 */
+.acct-card-inuse { border-color: #86efac; box-shadow: inset 3px 0 0 #16a34a; }
+
+/* 面板标题行（标题 + 右侧操作） */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.panel-head h2 { margin: 0; font-size: 14px; font-weight: 600; color: #4a5058; }
+.panel-head-right { display: flex; align-items: center; gap: 10px; }
+.hint-text { font-size: 12px; color: #9aa1a9; }
+
+/* 提示文字的**警告态**（2026-10-07）：
+   用于「重新拉取上游目录」失败/部分失败时 —— 此时**原有列表仍在生效**，
+   用户必须看得见"没更新"，否则会以为列表已是最新。
+   颜色沿用面板里既有的失败红（见 .import-summary b.bad）。 */
+.hint-text.bad { color: #dc2626; }
+
+/* 额度行：大字总额度 + 包数 + 更新时间 */
+.acct-credit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+  margin: 8px 0 6px;
+}
+/* 一行 3 个后卡片变窄，23px 会挤掉"积分包"与更新时间，收到 20px */
+.acct-credit { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.acct-credit-none { color: #b0b6bd; }
+.acct-pkg-count { font-size: 12px; color: #4a5058; }
+.acct-credit-at { font-size: 11px; color: #a8aeb6; }
+
+/* 最近到期包 */
+.acct-pkgs2 { border-top: 1px solid #f0f1f4; margin-top: 6px; }
+.pkg-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed #f0f1f4;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.pkg-row:last-of-type { border-bottom: none; }
+.pkg-row .pkg-name { color: #4a5058; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pkg-row .pkg-remain { margin-left: auto; font-weight: 600; white-space: nowrap; }
+.pkg-row .pkg-exp { color: #a8aeb6; white-space: nowrap; }
+.pkg-row .pkg-remain.pkg-soon-txt { color: #d97706; }
+.pkg-row .pkg-remain.pkg-expired-txt { color: #dc2626; }
+.pkg-row.pkg-row-expired .pkg-exp { color: #dc2626; }
+
+.pkg-more {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: #16a34a;
+}
+.pkg-more:hover { text-decoration: underline; }
+
+/* 进度条（模态里的包列表用） */
+.pkg-progress { height: 6px; background: #eef0f3; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+.pkg-progress > i { display: block; height: 100%; background: #16a34a; border-radius: 3px; }
+
+.pkg-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: 1px;
+  color: #fff;
+}
+.pkg-tag.soon { background: #d97706; }
+.pkg-tag.expired { background: #dc2626; }
+
+/* 备注 / 错误 */
+.acct-note { font-size: 11px; color: #a8aeb6; margin-top: 5px; word-break: break-all; }
+
+.acct-actions { display: flex; gap: 8px; margin-top: 10px; }
+.acct-actions button {
+  padding: 4px 12px;
+  border: 1px solid #dfe2e7;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #4a5058;
+}
+.acct-actions button:hover:not(:disabled) { border-color: #b9c0c9; background: #f7f8fa; }
+.acct-actions button:disabled { opacity: .5; cursor: default; }
+.acct-actions button.checked-ok { color: #16a34a; border-color: #bfe6cd; background: #f2fbf5; }
+
+/* ══ 模态弹窗（单例 overlay） ══ */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  padding: 24px 16px;
+  background: rgba(15, 23, 42, .45);
+  overflow-y: auto;
+}
+.overlay.open { display: flex; }
+
+.modal {
+  position: relative;
+  width: 640px;
+  max-width: 100%;
+  margin: auto; /* 弹性居中：内容超长时容器滚动而不裁切 */
+  background: #fff;
+  border-radius: 10px;
+  padding: 18px 20px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.18);
+}
+.modal-sm { width: 480px; }
+
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  color: #8a9099;
+}
+.modal-close:hover { background: #f3f4f6; color: #1f2329; }
+
+.modal-body h3 { margin: 0 0 12px; font-size: 15px; font-weight: 600; padding-right: 24px; }
+.modal-body h4 { margin: 14px 0 6px; font-size: 13px; font-weight: 600; color: #4a5058; }
+.modal-body textarea {
+  width: 100%;
+  min-height: 160px;
+  padding: 10px;
+  border: 1px solid #dfe2e7;
+  border-radius: 8px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1f2329;
+  resize: vertical;
+}
+.modal-body textarea:focus { outline: none; border-color: #16a34a; }
+
+.modal-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.btn-primary {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: #15803d; border-color: #15803d; }
+
+/* 危险操作按钮（删除账号的确认键）—— 与「确认重启/清空密钥」同一语义：
+   红色 = 不可逆。不用 .btn-primary 的绿色，避免用户条件反射地连点。 */
+.btn-danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) { background: #b91c1c; border-color: #b91c1c; }
+
+/* 卡片上的「删除」按钮：常态低调，悬停才显红 —— 避免误点，
+   但点开后仍有二次确认兜底（见 app.js 的 openRemoveConfirm）。 */
+.acct-actions button.acct-del { color: #8a9099; }
+.acct-actions button.acct-del:hover:not(:disabled) {
+  color: #dc2626; border-color: #f0bfbf; background: #fef2f2;
+}
+
+/* 删除确认框里的后果说明 */
+.remove-note { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: #5b6169; }
+.remove-note li { margin: 4px 0; }
+.modal-hint { font-size: 11px; color: #a8aeb6; }
+
+.import-result { margin-top: 14px; border-top: 1px solid #f0f1f4; padding-top: 10px; font-size: 12px; }
+.import-summary b.ok { color: #16a34a; }
+.import-summary b.bad { color: #dc2626; }
+.import-errors { margin: 8px 0 0; padding-left: 18px; color: #dc2626; }
+.import-errors li { margin: 2px 0; word-break: break-all; }
+.import-accts { margin: 8px 0 0; padding: 0; list-style: none; }
+.import-accts li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px dashed #f0f1f4;
+  font-variant-numeric: tabular-nums;
+}
+.import-accts .cred-ok { color: #16a34a; }
+.import-accts .cred-bad { color: #dc2626; }
+
+/* 包清单（模态内） */
+.pkgs-list { margin: 0; padding: 0; list-style: none; }
+.pkgs-list > li { padding: 8px 0; border-bottom: 1px solid #f0f1f4; font-size: 12px; }
+.pkgs-list > li:last-child { border-bottom: none; }
+.pkg-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pkg-line .p-name { font-weight: 600; color: #1f2329; }
+.pkg-line .p-remain { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pkg-line .p-exp { color: #a8aeb6; }
+
+.foot { margin-top: 18px; text-align: center; font-size: 12px; color: #a8aeb6; }
+
+/* ══ 导入账号弹层的「凭据从哪来」引导 ══
+ *
+ * 背景：委托方反馈"不知道凭据从哪来" —— 只有一个空粘贴框。
+ * 本块只做**说明**，不替用户去读本机文件（自动扫描已被否决：
+ * 会把外部项目的文件格式变成隐性依赖，见 Codex 第 7 轮 C4）。
+ */
+.import-guide {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  background: #f6f8fa;
+  border: 1px solid #e3e8ee;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: #444c56;
+}
+.import-guide b { color: #1f2328; }
+.import-guide ol { margin: 6px 0 0; padding-left: 20px; }
+.import-guide li { margin-bottom: 2px; }
+.import-guide code {
+  padding: 1px 4px;
+  background: #eaeef2;
+  border-radius: 4px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+.import-guide-note {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px dashed #d8dee4;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   网页登录：进度条与状态（2026-10-05）
+   ─────────────────────────────────────────────────────────────
+   设计说明：进度是**阶段性**的，不是平滑的假百分比。
+   后端并不知道"用户还要多久才登完"，编造一个匀速增长的进度条
+   是不诚实的。所以这里只表达四个真实阶段：
+     启动浏览器(15%) → 等待登录(45%) → 验证凭据(75%) → 完成(100%)
+   ───────────────────────────────────────────────────────────── */
+.login-progress { margin-top: 12px; }
+.login-bar {
+  height: 6px;
+  background: #eaeef2;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.login-bar-fill {
+  height: 100%;
+  width: 0;
+  background: #2f6feb;
+  border-radius: 3px;
+  transition: width .4s ease, background .3s ease;
+}
+.login-bar-fill.is-ok { background: #1a7f37; }
+.login-bar-fill.is-error { background: #cf222e; }
+.login-status {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #444c56;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.login-status.is-ok { color: #1a7f37; font-weight: 600; }
+.login-status.is-error { color: #cf222e; }

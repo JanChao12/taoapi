@@ -1,0 +1,141 @@
+{
+    "_meta":  {
+                  "note":  "从真实上游响应裁剪，仅保留 4 个代表模型用于 fake upstream 测试",
+                  "source":  "https://copilot.tencent.com/v2/enterprises/personal/models",
+                  "capturedAt":  "2026-10-04",
+                  "originalCount":  31
+              },
+    "code":  0,
+    "msg":  "ok",
+    "data":  {
+                 "models":  [
+                                {
+                                    "contextWindow":  {
+                                                          "defaultLength":  300000,
+                                                          "supportedLengths":  [
+                                                                                   300000,
+                                                                                   600000,
+                                                                                   1000000
+                                                                               ]
+                                                      },
+                                    "credits":  "x0.79",
+                                    "descriptionEn":  "Flagship model, excelling at complex software engineering and long-horizon agent tasks",
+                                    "descriptionZh":  "旗舰模型，擅长复杂软件工程与长程 Agent 任务",
+                                    "id":  "glm-5.3",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  64000,
+                                    "name":  "GLM-5.3",
+                                    "onlyReasoning":  true,
+                                    "reasoning":  {
+                                                      "canDisableThinking":  false,
+                                                      "defaultEffort":  "high",
+                                                      "summary":  "auto",
+                                                      "supportedEfforts":  [
+                                                                               "low",
+                                                                               "high",
+                                                                               "max"
+                                                                           ]
+                                                  },
+                                    "relatedModels":  {
+                                                          "lite":  "glm-5.3",
+                                                          "reasoning":  "glm-5.3"
+                                                      },
+                                    "supportsImages":  true,
+                                    "supportsReasoning":  true,
+                                    "supportsToolCall":  true,
+                                    "tags":  [
+                                                 "craft"
+                                             ],
+                                    "temperature":  1,
+                                    "vendor":  "e"
+                                },
+                                {
+                                    "contextWindow":  {
+                                                          "defaultLength":  300000,
+                                                          "supportedLengths":  [
+                                                                                   300000,
+                                                                                   600000,
+                                                                                   1000000
+                                                                               ]
+                                                      },
+                                    "credits":  "x0.11 credits",
+                                    "descriptionEn":  "DeepSeek flagship model, supporting 1M context window, native multimodal model",
+                                    "descriptionZh":  "DeepSeek 旗舰模型，支持 1M 上下文窗口，原生多模态",
+                                    "id":  "deepseek-v4.1-flash",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  128000,
+                                    "name":  "Deepseek-V4.1-Flash",
+                                    "onlyReasoning":  true,
+                                    "reasoning":  {
+                                                      "effort":  "high",
+                                                      "summary":  "auto"
+                                                  },
+                                    "relatedModels":  {
+                                                          "lite":  "deepseek-v4.1-flash",
+                                                          "reasoning":  "deepseek-v4.1-flash"
+                                                      },
+                                    "supportsImages":  true,
+                                    "supportsReasoning":  true,
+                                    "supportsToolCall":  true,
+                                    "tags":  [
+                                                 "craft"
+                                             ],
+                                    "temperature":  1,
+                                    "vendor":  "f"
+                                },
+                                {
+                                    "disabledMultimodal":  true,
+                                    "id":  "hunyuan-chat",
+                                    "maxInputTokens":  200000,
+                                    "maxOutputTokens":  8192,
+                                    "name":  "Hunyuan-Turbos",
+                                    "supportsImages":  false,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "j"
+                                },
+                                {
+                                    "contextWindow":  {
+                                                          "defaultLength":  1000000,
+                                                          "supportedLengths":  [
+                                                                                   300000,
+                                                                                   600000,
+                                                                                   1000000
+                                                                               ]
+                                                      },
+                                    "credits":  "x0.03 credits",
+                                    "descriptionEn":  "Blazing-fast, anonymous model with strong coding skills and native multimodal input.",
+                                    "descriptionZh":  "推理速度极快，编码能力强劲，并支持原生多模态输入的匿名大模型",
+                                    "id":  "space-bunny",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  128000,
+                                    "name":  "Space-Bunny",
+                                    "onlyReasoning":  true,
+                                    "reasoning":  {
+                                                      "canDisableThinking":  false,
+                                                      "defaultEffort":  "max",
+                                                      "summary":  "auto",
+                                                      "supportedEfforts":  [
+                                                                               "low",
+                                                                               "medium",
+                                                                               "high",
+                                                                               "xhigh",
+                                                                               "max"
+                                                                           ]
+                                                  },
+                                    "relatedModels":  {
+                                                          "builtin-lite":  "wb-lite",
+                                                          "lite":  "space-bunny",
+                                                          "reasoning":  "space-bunny"
+                                                      },
+                                    "supportsImages":  true,
+                                    "supportsReasoning":  true,
+                                    "supportsToolCall":  true,
+                                    "temperature":  1,
+                                    "vendor":  "f"
+                                }
+                            ]
+             }
+}

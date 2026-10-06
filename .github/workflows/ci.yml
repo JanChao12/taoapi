@@ -1,0 +1,76 @@
+name: CI
+
+# 本项目【只面向 Windows】：
+#   - 凭据用 Windows DPAPI 加密（internal/storage/dpapi_windows.go），
+#     非 Windows 上是**故意报错**的占位实现（dpapi_other.go）——
+#     不提供明文/固定密钥降级，见该文件注释。
+#   - 跨进程文件锁、注册表自启动、重命名重试都依赖 Windows 语义。
+# 所以在 ubuntu runner 上跑测试**必然失败，且那是预期行为不是 bug**，
+# 故这里只跑 windows-latest（与开发机环境一致，全绿基线 645 测试）。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消上一次未跑完的任务。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false # 零第三方依赖，没有 go.sum，缓存无意义
+
+      - name: 格式检查（gofmt）
+        shell: pwsh
+        run: |
+          # gofmt -l 会列出未格式化的文件；有输出即失败。
+          $unformatted = gofmt -l .
+          if ($unformatted) {
+            Write-Host "::error::以下文件未通过 gofmt，请运行 gofmt -w ."
+            $unformatted | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "gofmt 干净"
+
+      - name: 编译
+        shell: pwsh
+        run: go build ./...
+
+      - name: 静态检查（go vet）
+        shell: pwsh
+        run: go vet ./...
+
+      - name: 测试
+        shell: pwsh
+        run: go test -count=1 ./...
+
+      - name: 零第三方依赖断言（自持约束）
+        shell: pwsh
+        run: |
+          # 该项目的硬约束是"纯标准库"。若有人引入第三方依赖，这里必须失败。
+          $mods = @(go list -m all)
+          if ($mods.Count -ne 1) {
+            Write-Host "::error::引入了第三方依赖，违反'纯标准库/零依赖'约束："
+            $mods | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "仅自身模块，零第三方依赖"
+
+      - name: 离线可构建断言（自持约束）
+        shell: pwsh
+        run: |
+          # 断开模块代理仍能构建 ⇒ 证明不依赖任何远程模块。
+          $env:GOPROXY = "off"
+          $env:GOFLAGS = "-mod=mod"
+          go build ./...
+          Write-Host "GOPROXY=off 下构建成功"

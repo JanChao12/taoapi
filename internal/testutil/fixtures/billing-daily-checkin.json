@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "note": "签到接口的真实观测结果。2026-10-04 当天【已签到成功过】，因此再次调用返回 HTTP 400 且 body 为空。",
+    "endpoint": "POST https://www.codebuddy.cn/v2/billing/meter/daily-checkin",
+    "contentType": "application/json",
+    "requeastBody": {},
+    "observedAt": "2026-10-04",
+    "observedResponse": {
+      "httpStatus": 400,
+      "body": "",
+      "interpretation": "今日已签到（不是错误）"
+    },
+    "crossCheck": {
+      "source": "wild-work data/state-workbuddy.json",
+      "evidence": [
+        "{ uid:eeeeeeee, credits:2284, last_checkin_ok:true, last_checkin_at:'2026-10-04T12:28:18+08:00', last_checkin_msg:'ok' }",
+        "{ uid:aaaaaaaa, credits:3136, expiring:1049, last_checkin_ok:true, last_checkin_at:'2026-10-04T12:28:20+08:00' }",
+        "{ uid:cccccccc, credits:2368, last_checkin_ok:true, last_checkin_at:'2026-10-04T12:28:22+08:00' }"
+      ],
+      "conclusion": "同日 12:28 三个账号均签到成功，故本次复测必然返回已签到状态"
+    },
+    "implementationRule": {
+      "http400_emptyBody": "判定为 already_checked_in，不视为失败，不计入错误冷却",
+      "bizCodeNonZero": "按 msg 文本区分（wild-work 的实现方式：code != 0 即返回错误，由调用方按 msg 判断）",
+      "todo": "真实签到成功响应需在次日首次签到时抓取，补入本 fixture"
+    }
+  }
+}

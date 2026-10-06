@@ -1,0 +1,149 @@
+# DSH 接入配置样例（workbuddy 反代）
+#
+# 用法：
+#   1. 启动反代：wbapi serve
+#   2. 把本文件内容合并进 $DSH_HOME/profiles/<profile>/cordis.patch.yml
+#   3. 重启 DSH，在模型选择器里选 workbuddy/<model>
+#
+# ⚠️ 为什么需要这份配置（不是多此一举）：
+#   DSH 从 /v1/models 只读取 id / name / contextWindow / maxTokens 四个字段，
+#   【不读思考档位】。档位只能通过本文件的 reasoningEfforts 声明。
+#   官方文档 providers.zh.md:113 原文：
+#     「内置提供商的模型从已安装目录继承其等级。手动录入的模型不声明任何等级，
+#       因此模型菜单里不会出现推理等级项。」
+#   所以：光启动反代 → DSH 能列出模型，但【选不了档位】。
+#
+# 本文件的 reasoningEfforts 按【实测】生成，不是照抄上游声明。
+# 依据见 data/fixtures/MANIFEST.json 的 reasoningModes 段。
+
+- id: llm-pi-ai
+  config:
+    providers:
+      workbuddy:
+        # 反代监听地址（只用回环）
+        baseURL: http://127.0.0.1:8787/v1
+        api: openai-completions
+
+        # ── 密钥 ──────────────────────────────────────────────────────
+        # DSH 要求每个 provider 必须有密钥，否则【请求根本不会发出】，
+        # 只在本机报错：No API key for provider: <provider名>（错误码 PI_AI_ERROR）。
+        #
+        # 本反代【完全不校验 key】（实测：不带 Authorization 也是 200），
+        # 所以填任意非空值即可，例如 1 或 local。
+        #
+        # 【本机实测结论】不要去手改这一行：
+        #   在 DSH 设置界面的「API 密钥」框里填值并保存，DSH 会
+        #     1) 按下面的规则推导环境变量名，
+        #     2) 把密钥写进 .credentials.yaml 的 refs，
+        #     3) 自动在 provider 配置里补上 apiKeyEnv 这一行。
+        #   本机两个 provider 都是这样生成的：
+        #     wild-work → apiKeyEnv: WILD_WORK_API_KEY（凭据 refs 同名）
+        #     me        → apiKeyEnv: ME_API_KEY（凭据 refs 同名）
+        #
+        # 推导规则（DSH 源码 dsh-client-ui-settings-models 实测）：
+        #   function deriveKeyRef(provider) {
+        #     return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+        #   }
+        #   即 provider 名 → 大写、非字母数字转下划线、加 _API_KEY 后缀：
+        #     workbuddy → WORKBUDDY_API_KEY
+        #     my-provider → MY_PROVIDER_API_KEY
+        #
+        # ⚠️ 不要写 apiKeyEnv: WBAPI_LOCAL_KEY —— 该变量本机并不存在，
+        #    照抄会触发 "No API key for provider"（2026-10-05 委托人真实踩到）。
+        #
+        # 下面这行是与本文件 provider 名（workbuddy）匹配的推导结果，
+        # 供【手工配置】时参考；用设置界面填 key 的话不需要管它。
+        apiKeyEnv: WORKBUDDY_API_KEY
+
+        # 路由默认档位：会话未选择档位时采用
+        reasoning: high
+
+        models:
+          # ─────────────────────────────────────────────────────────
+          # 1) space-bunny —— 实测「真旋钮」，5 档全部有效
+          #    证据：均值 44→53.7→61.7→79.7→83.7 严格单调；
+          #          low 最大值 47 < xhigh 最小值 55，完全不重叠
+          # ─────────────────────────────────────────────────────────
+          - id: workbuddy/space-bunny
+            name: Space-Bunny (WorkBuddy)
+            contextWindow: 1000000
+            maxTokens: 128000
+            input: [text, image]
+            reasoningEfforts:
+              off:                 # 留空 = 不发送 reasoning_effort
+              low: low
+              medium: medium
+              high: high
+              xhigh: xhigh
+              max: max
+
+          # ─────────────────────────────────────────────────────────
+          # 2) glm-5.3 —— 实测「低档≈不思考，max 突变」
+          #    证据：low 中位 78 / high 中位 178 / max 中位 3232（跳 18 倍）
+          #    只声明三档，避免给出实测无差异的档位误导用户
+          # ─────────────────────────────────────────────────────────
+          - id: workbuddy/glm-5.3
+            name: GLM-5.3 (WorkBuddy)
+            contextWindow: 1000000
+            maxTokens: 64000
+            input: [text, image]
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+
+          # ─────────────────────────────────────────────────────────
+          # 3) deepseek-v4.1-flash —— 实测「纯开关」
+          #    证据：各档 reasoning_tokens 178–257 随机排列（minimal > high），
+          #          档位高低无影响；但【不传 = 完全不思考】(reasoning_tokens=0)
+          #    → 只给 off / high 两档。反代服务端会在「用户不传」时
+          #      主动注入 high，所以这里选 off 才是真的关思考。
+          # ─────────────────────────────────────────────────────────
+          - id: workbuddy/deepseek-v4.1-flash
+            name: Deepseek-V4.1-Flash (WorkBuddy)
+            contextWindow: 1000000
+            maxTokens: 128000
+            input: [text, image]
+            reasoningEfforts:
+              off:
+              high: high
+
+          # ─────────────────────────────────────────────────────────
+          # 4) hunyuan-chat —— 上游未声明 reasoning，非思考模型
+          #    用 reasoningEfforts: false 显式去掉档位菜单
+          # ─────────────────────────────────────────────────────────
+          - id: workbuddy/hunyuan-chat
+            name: Hunyuan-Turbos (WorkBuddy)
+            contextWindow: 200000
+            maxTokens: 8192
+            input: [text]
+            reasoningEfforts: false
+
+# ─────────────────────────────────────────────────────────────────────
+# 补充说明
+# ─────────────────────────────────────────────────────────────────────
+#
+# 【A】为什么 contextWindow 写 1000000 而不是 300000？
+#      上游多数模型的 contextWindow.defaultLength = 300000，
+#      supportedLengths = [300000, 600000, 1000000]。
+#      我们「默认取官方最大值」——反代在向上游转发时会显式带
+#      context_length=1000000，所以这里声明最大值才与实际一致。
+#
+# 【B】off 为什么留空？
+#      官方文档：留空的 off 什么都不发送；给 off 一个值则会发送该值。
+#      我们的模型都是「按请求才思考」型，所以 off 留空即可。
+#      若以后接入「不明确关闭就会思考」的模型，需要加：
+#          compat:
+#            thinkingFormat: deepseek
+#
+# 【C】服务端已做的兼容归一（客户端无需配置）：
+#      - 系统提示词 role: developer → system（上游白名单不含 developer）
+#      - max_completion_tokens → max_tokens（上游只认后者）
+#      - 强制 stream: true（上游拒绝非流式）
+#
+# 【D】模型名可简写吗？
+#      可以，但映射表由【你自己】在 DSH 侧或客户端侧维护。
+#      反代只暴露 workbuddy/xxx 全名，不内置别名。
+#      例：你想把 workbuddy/deepseek-v4.1-flash 叫成 dsf，
+#          在客户端配置里自己加映射即可。

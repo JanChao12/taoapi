@@ -1,0 +1,196 @@
+{
+    "_meta":  {
+                  "note":  "从真实 /v3/config 响应裁剪；保留 5 个 /v2 未发布的模型 + 2 个重叠模型 + 2 个抽象档位",
+                  "source":  "https://www.workbuddy.ai/v3/config",
+                  "capturedAt":  "2026-10-07",
+                  "originalCount":  22,
+                  "fieldsPerModel":  15,
+                  "note2":  "真实响应每条 15 字段（比 /v2 多 contextWindow/maxInputTokens/maxOutputTokens/onlyReasoning/reasoning）",
+                  "note3":  "🔴 agents.cli 故意**不含** deepseek-v4.1-flash-sg —— 与真实响应一致。这是回归护栏：若有人给 /v3 也套 agents 裁剪，这个模型会消失"
+              },
+    "code":  0,
+    "msg":  "ok",
+    "data":  {
+                 "enterpriseId":  "",
+                 "productFeatures":  {
+                                         "CustomModelsJSON":  true
+                                     },
+                 "agents":  [
+                                {
+                                    "name":  "cli",
+                                    "tags":  [
+                                                 "cli",
+                                                 "default",
+                                                 "model:craft"
+                                             ],
+                                    "models":  [
+                                                   "default-model",
+                                                   "fast-model",
+                                                   "balanced-model",
+                                                   "primary-model",
+                                                   "deep-model",
+                                                   "hy4-preview",
+                                                   "glm-5.3",
+                                                   "deepseek-v4.1-flash",
+                                                   "gpt-6-astra",
+                                                   "glm-5.3-flash",
+                                                   "kimi-k2.8-preview"
+                                               ]
+                                }
+                            ],
+                 "models":  [
+                                {
+                                    "contextWindow":  {
+                                                           "defaultLength":  300000,
+                                                           "supportedLengths":  [
+                                                                                    300000,
+                                                                                    1000000
+                                                                                ]
+                                                       },
+                                    "credits":  "x0.00",
+                                    "descriptionEn":  "DeepSeek flagship model, supporting 1M context window",
+                                    "descriptionZh":  "DeepSeek 旗舰模型，支持 1M 上下文",
+                                    "id":  "deepseek-v4.1-flash",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  128000,
+                                    "name":  "DeepSeek-V4.1-Flash",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "d"
+                                },
+                                {
+                                    "contextWindow":  {
+                                                           "defaultLength":  300000,
+                                                           "supportedLengths":  [
+                                                                                    300000,
+                                                                                    1000000
+                                                                                ]
+                                                       },
+                                    "credits":  "x0.03",
+                                    "descriptionEn":  "DeepSeek flagship model (SG node)",
+                                    "descriptionZh":  "DeepSeek 旗舰模型（新加坡节点）",
+                                    "id":  "deepseek-v4.1-flash-sg",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  128000,
+                                    "name":  "DeepSeek-V4.1-Flash-SG",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "d"
+                                },
+                                {
+                                    "credits":  "x0.06",
+                                    "descriptionEn":  "Native multimodal model",
+                                    "descriptionZh":  "原生多模态模型",
+                                    "id":  "glm-5.3-flash",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  48000,
+                                    "name":  "GLM-5.3-Flash",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "z"
+                                },
+                                {
+                                    "canDisableThinking":  true,
+                                    "credits":  "x0.77",
+                                    "descriptionEn":  "Excels at complex, long-horizon tasks",
+                                    "descriptionZh":  "擅长复杂长程任务",
+                                    "id":  "kimi-k2.8-preview",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  32000,
+                                    "name":  "Kimi-K2.8-Preview",
+                                    "supportsImages":  false,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "m"
+                                },
+                                {
+                                    "contextWindow":  {
+                                                           "defaultLength":  400000,
+                                                           "supportedLengths":  [
+                                                                                    400000,
+                                                                                    1000000
+                                                                                ]
+                                                       },
+                                    "credits":  "x6.67",
+                                    "descriptionEn":  "OpenAI's flagship model for complex reasoning",
+                                    "descriptionZh":  "OpenAI 旗舰模型，擅长复杂推理与长程任务",
+                                    "id":  "gpt-6-astra",
+                                    "maxAllowedSize":  1000000,
+                                    "maxInputTokens":  1000000,
+                                    "maxOutputTokens":  128000,
+                                    "name":  "GPT-6-Astra",
+                                    "onlyReasoning":  true,
+                                    "reasoning":  {
+                                                      "canDisableThinking":  true,
+                                                      "defaultEffort":  "high",
+                                                      "summary":  "auto",
+                                                      "supportedEfforts":  [
+                                                                               "low",
+                                                                               "medium",
+                                                                               "high",
+                                                                               "max"
+                                                                           ]
+                                                  },
+                                    "supportsImages":  true,
+                                    "supportsReasoning":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "e"
+                                },
+                                {
+                                    "credits":  "x0.79",
+                                    "descriptionEn":  "Flagship model for complex engineering",
+                                    "descriptionZh":  "旗舰模型，擅长复杂软件工程",
+                                    "id":  "glm-5.3",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  48000,
+                                    "name":  "GLM-5.3",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "z"
+                                },
+                                {
+                                    "credits":  "x0.29",
+                                    "descriptionEn":  "Preview model",
+                                    "descriptionZh":  "预览模型",
+                                    "id":  "hy4-preview",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  64000,
+                                    "name":  "Hy4 preview",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "t"
+                                },
+                                {
+                                    "credits":  "x0.79 credits",
+                                    "descriptionEn":  "Auto model",
+                                    "descriptionZh":  "自动模型",
+                                    "id":  "default-model",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  24000,
+                                    "name":  "Auto",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "e"
+                                },
+                                {
+                                    "credits":  "x3.33 credits",
+                                    "descriptionEn":  "Deep reasoning model",
+                                    "descriptionZh":  "深度推理模型",
+                                    "id":  "deep-model",
+                                    "maxAllowedSize":  200000,
+                                    "maxInputTokens":  176000,
+                                    "maxOutputTokens":  24000,
+                                    "name":  "Deep",
+                                    "supportsImages":  true,
+                                    "supportsToolCall":  true,
+                                    "vendor":  "e"
+                                }
+                            ]
+             }
+}

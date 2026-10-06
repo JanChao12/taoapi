@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TAOAPI 管理面板</title>
+<link rel="stylesheet" href="/panel/style.css">
+<link rel="stylesheet" href="/panel/settings.css">
+</head>
+<body>
+<div class="layout">
+
+  <!-- ══════════ 侧边栏 ══════════ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <div class="brand-text">
+        <div class="title">TAOAPI <span class="ver" id="ver"></span></div>
+        <div class="sub">额度反代面板</div>
+      </div>
+    </div>
+
+    <nav class="side-nav">
+      <button type="button" class="side-item active" data-page="accounts"><span class="ico">📊</span><span>账号管理</span></button>
+      <button type="button" class="side-item" data-page="stats"><span class="ico">📈</span><span>用量统计</span></button>
+      <button type="button" class="side-item" data-page="api"><span class="ico">🔌</span><span>API 接入</span></button>
+      <button type="button" class="side-item" data-page="settings"><span class="ico">⚙</span><span>设置</span></button>
+    </nav>
+
+    <!-- 左下角状态：运行时间**单独一行**（委托方要求）——
+         原来"运行 8m45s · 渠道 workbuddy, workbuddyai"挤在一行会被折断，
+         渠道名一长就换行到莫名其妙的位置。 -->
+    <div class="side-foot">
+      <div class="foot-uptime" id="uptimeLine">加载中…</div>
+      <div class="foot-channels" id="serverLine"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- ══════════ 页：账号管理（默认） ══════════ -->
+    <section class="page" id="page-accounts">
+      <!-- 状态提示条（自动签到 / 开机自启）——由 app.js 的 renderHomeTips 按实际开关渲染。
+           🔴 这里【不能】写死文案：原来是一句静态的
+              「✅ 每日自动签到已开启」，无论开关是否打开都显示 ——
+              委托方实测反馈「我明明没开启自动签到，为什么主页显示自动签到已开启」。
+              现在改为动态：只在真正开启时才显示对应提示，两个都关则整块隐藏。 -->
+      <div class="hidden" id="home-tips"></div>
+      <div class="page-toolbar">
+        <h1 class="page-title">账号 <span class="count-chip" id="acct-count">0</span></h1>
+        <div class="toolbar-btns">
+          <button type="button" class="btn" id="btn-import">添加账号</button>
+          <button type="button" class="btn" id="btn-checkin-all">全部签到</button>
+          <button type="button" class="btn" id="btn-refresh-all">刷新额度</button>
+        </div>
+      </div>
+
+      <!-- 批量操作结果提示（由 app.js 的 showAcctNotice 填充）
+           🔴 为什么要这块：签到与随后的额度刷新是两步，可能一步成功一步失败。
+           不显式提示的话，用户只知道"点了没反应"，无法判断到底成没成。 -->
+      <div class="tip st-hidden" id="acct-notice" role="status" aria-live="polite"></div>
+
+      <div id="acct-cards" class="acct-grid"><!-- 账号卡片由 JS 渲染 --></div>
+    </section>
+
+    <!-- ══════════ 页：用量统计 ══════════ -->
+    <section class="page hidden" id="page-stats">
+      <nav class="tabs">
+        <button type="button" class="tab active" data-range="1">今日</button>
+        <button type="button" class="tab" data-range="7">7 天</button>
+        <button type="button" class="tab" data-range="30">30 天</button>
+        <button type="button" class="tab" data-range="365">总计</button>
+      </nav>
+
+      <!-- 数据不完整时的警示（CSS 用 .hidden 控制显隐；用户没数据时也隐藏）
+           由 app.js 的 renderStats() 填充：截断 = 只统计了可读部分；
+           写入不可用 = 非 Windows 没有跨进程文件锁，统计不会更新。
+           不加这条的话，用户只看到数字变小却不知道原因 —— 比报错更误导。 -->
+      <div class="tip tip-warn hidden" id="stats-warn" role="status"></div>
+
+      <section class="cards">
+        <div class="card">
+          <div class="card-label">请求次数</div>
+          <div class="card-value" id="s-requests">—</div>
+          <div class="card-sub" id="s-failed"></div>
+        </div>
+        <div class="card">
+          <div class="card-label">↑ 输入 TOKEN</div>
+          <div class="card-value" id="s-prompt">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">↓ 输出 TOKEN</div>
+          <div class="card-value" id="s-completion">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">TOKEN 总计</div>
+          <div class="card-value" id="s-total">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">积分消耗</div>
+          <div class="card-value" id="s-credit">—</div>
+        </div>
+        <!-- 全局缓存命中率（委托方要求）——
+             之前只有底部的环形图，卡片区没有数字，扫一眼看不到。 -->
+        <div class="card">
+          <div class="card-label">缓存命中率</div>
+          <div class="card-value" id="s-hitrate">—</div>
+        </div>
+      </section>
+
+      <!-- 🔴 三个面板的分组切换（2026-10-06 委托方澄清）。
+           委托方原话：
+             「我要去做三个分组分别是模型用量、账号用量、调用记录，
+               而不是做国内版和国际版的分组。我是说这三个面板一次只显示一个，
+               我点那个分组就显示哪个面板。」
+           ⇒ 这是**面板级**的标签（互斥显示），不是平台筛选。
+             平台筛选是另一回事（上一版我理解错了）。 -->
+      <nav class="panel-tabs" id="stats-tabs">
+        <button type="button" class="panel-tab active" data-stat="log">调用记录</button>
+        <button type="button" class="panel-tab" data-stat="model">模型用量</button>
+        <button type="button" class="panel-tab" data-stat="acct">账号用量</button>
+      </nav>
+
+      <!-- ① 调用记录（默认显示）——
+           委托方要求："调用记录放在第一位，默认打开用量统计时显示调用记录" -->
+      <section class="panel stat-pane" id="pane-log">
+        <div class="panel-head">
+          <h2>调用记录</h2>
+          <div class="panel-head-right">
+            <span class="hint-text" id="usage-log-note"></span>
+            <button type="button" class="btn btn-sm" id="btn-refresh-usage-log">刷新</button>
+          </div>
+        </div>
+        <table class="tbl" id="usage-log-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>账号</th>
+              <th>模型</th>
+              <th class="num">输入</th><th class="num">输出</th>
+              <th class="num">缓存命中率</th>
+              <th class="num">积分</th>
+              <th class="num">耗时</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="usage-log-body">
+            <tr><td colspan="9" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+        <nav class="pager" id="log-pager"></nav>
+      </section>
+
+      <!-- ② 模型用量 -->
+      <section class="panel stat-pane hidden" id="pane-model">
+        <h2>模型用量</h2>
+        <table class="tbl" id="model-table">
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th class="num">调用</th><th class="num">输入</th>
+              <th class="num">输出</th>
+              <th class="num">缓存命中率</th>
+              <th class="num">积分消耗</th>
+            </tr>
+          </thead>
+          <tbody id="model-body">
+            <tr><td colspan="6" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+        <nav class="pager" id="model-pager"></nav>
+      </section>
+
+      <!-- ③ 账号用量 -->
+      <section class="panel stat-pane hidden" id="pane-acct">
+        <h2>账号用量</h2>
+        <table class="tbl" id="acct-table">
+          <thead>
+            <tr>
+              <th>账号</th>
+              <th class="num">调用</th>
+              <th class="num">输入</th><th class="num">输出</th><th class="num">合计</th>
+              <th class="num">缓存命中率</th><th class="num">积分消耗</th>
+            </tr>
+          </thead>
+          <tbody id="acct-body">
+            <tr><td colspan="7" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+        <nav class="pager" id="acct-pager"></nav>
+      </section>
+    </section>
+
+    <!-- ══════════ 页：API 接入 ══════════ -->
+    <section class="page hidden" id="page-api">
+      <section class="panel">
+        <h2>OpenAI 兼容接口</h2>
+
+        <!-- 接入信息：地址 + 密钥**同一行**（2026-10-06 委托方要求）。
+             「不要模型名，以及api key放到接口地址的右边而不是下方」——
+             地址与密钥是配客户端时**必须同时填**的两项，并排更方便对照。 -->
+        <div class="api-base-row">
+          <span class="api-label">接口地址</span>
+          <code class="api-base" id="apiAddr">—</code>
+          <button type="button" class="btn btn-sm" id="btn-copy-base">复制</button>
+
+          <span class="api-label api-label-gap">API Key</span>
+          <code class="api-base" id="apiKeyView">—</code>
+          <button type="button" class="btn btn-sm" id="btn-copy-key">复制</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>模型列表</h2>
+          <div class="panel-head-right">
+            <span class="hint-text" id="api-refresh-note">进入本页时加载一次。「重新拉取」会让服务真的去上游重取目录</span>
+            <button type="button" class="btn btn-sm" id="btn-refresh-models">重新拉取</button>
+          </div>
+        </div>
+
+        <!-- 平台分组（可切换）——委托方要求：
+             「我们应该做两个这样的分组可以选，将模型数也显示在这里面，
+               选中哪个分组下方的模型列表就只显示对应平台的」。
+             分组由后端 /api/models 的 groups 字段给出（前端不猜前缀）。 -->
+        <nav class="plat-tabs" id="api-plat-tabs"></nav>
+
+        <!-- 前缀提示：模型 ID 在表格里不显示前缀（便于阅读），
+             但客户端调用时必须带上 —— 不写清楚用户会照着表格里的 ID
+             去调用然后报"模型不存在"。内容随选中平台动态更新。 -->
+        <div class="api-prefix-note">
+          接入 API 时请在模型 ID 前加上前缀 <code id="api-prefix">workbuddy/</code>，
+          例如 <code id="api-prefix-example">workbuddy/deepseek-v4.1-flash</code>。
+          <span class="hint-text">（下表为便于阅读省略了前缀）</span>
+        </div>
+
+        <table class="tbl" id="api-model-table">
+          <thead>
+            <tr>
+              <th>模型 ID</th>
+              <th>名称</th>
+              <th class="num">上下文</th>
+              <th class="num">最大输出</th>
+              <th class="num">倍率</th>
+              <th>思考档位</th>
+            </tr>
+          </thead>
+          <tbody id="api-model-body">
+            <tr><td colspan="6" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+        <!-- 别名说明：面板只列真实模型，别名（自定义映射）仍可由客户端调用。
+             两者数量不一致是刻意的，不说明的话用户会以为模型丢了。 -->
+        <div class="hint-text st-hidden" id="api-alias-note" style="margin-top:8px;"></div>
+      </section>
+    </section>
+
+      <!-- ══════════ 页：设置 ══════════ -->
+    <section class="page hidden" id="page-settings">
+
+      <!-- toast 容器：settings.js 只改它的 textContent -->
+      <div class="st-toast st-hidden" id="st-toast" role="status" aria-live="polite"></div>
+
+      <div class="tip st-tip st-tip-plain st-hidden" id="st-load-err"></div>
+      <div class="tip st-tip st-tip-danger st-hidden" id="st-corrupt">
+        ⚠️ 配置文件损坏：已回退到默认值，并把原文件重命名为 <code>config.json.corrupt-&lt;时间戳&gt;</code>。请检查后重新设置。
+      </div>
+
+      <!-- 顶层一览：把四区的关键状态压成一行，扫一眼就够 -->
+      <section class="panel">
+        <h2>当前设置一览</h2>
+        <div class="st-line">
+          <span class="st-toggle-state" id="st-sum-api-key">接口密钥：—</span>
+          <span class="st-toggle-state" id="st-sum-port">监听端口：—</span>
+          <span class="st-toggle-state" id="st-sum-auto-checkin">自动签到当前：—</span>
+          <span class="st-toggle-state" id="st-sum-auto-start">开机自启当前：—</span>
+        </div>
+      </section>
+
+      <!-- ══ 区 1：密钥 ══ -->
+      <section class="panel" id="st-sec-key">
+        <div class="panel-head">
+          <h2>密钥</h2>
+          <div class="st-head-tags"><span class="st-chip st-chip-now">立即生效</span></div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">接口密钥</div>
+          <div class="st-row-body">
+            <!-- 直接可编辑的明文输入框（2026-10-06 委托方要求）。
+                 设计参照下面的「端口」：改完点保存即生效，
+                 不要弹窗、不要「更换」按钮、不要先展开再输入。 -->
+            <!-- 委托方要求：输入框缩短一半左右，并限制最大 10 位
+                 （「这个修改key的框太长了，最起码可以缩短一半，
+                   或者限制最大10位数这样可以将框在设置短一点」）。 -->
+            <div class="st-line">
+              <input type="text" class="st-input st-input-key" id="st-key-input"
+                     maxlength="10" autocomplete="off" spellcheck="false"
+                     placeholder="留空 = 不校验">
+              <button type="button" class="btn btn-primary" id="btn-st-key-save">保存</button>
+              <button type="button" class="btn st-hidden" id="btn-st-key-clear">清空</button>
+            </div>
+            <span class="st-field-err" id="st-key-err"></span>
+
+            <span class="hint-text st-hint-block">
+              改完点「保存」立即生效。⚠️ 这是本机的接口密钥，明文显示（自用场景，服务只监听本机）——
+              任何人拿到它都能调用本机的接口，别贴到公开的地方。
+            </span>
+
+            <!-- 未设密钥时的醒目警示（settings.js 用 st-hidden 控制显隐） -->
+            <div class="tip st-tip st-tip-danger st-hidden" id="st-key-warn">
+              ⚠️ 未设密钥 —— 本机任何程序都可调用此接口
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 区 2：网络 ══ -->
+      <section class="panel" id="st-sec-net">
+        <div class="panel-head">
+          <h2>网络</h2>
+          <div class="st-head-tags"><span class="st-chip st-chip-later">需重启生效</span></div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">监听端口</div>
+          <div class="st-row-body">
+            <div class="st-line">
+              <input type="text" inputmode="numeric" class="st-input st-input-port" id="st-port" maxlength="5" placeholder="8787">
+              <button type="button" class="btn" id="btn-st-port-save">保存端口</button>
+              <span class="hint-text">范围 1024–65535（&lt;1024 需要管理员权限）</span>
+            </div>
+            <span class="st-field-err" id="st-port-err"></span>
+
+            <div class="st-line st-collapse st-hidden" id="st-port-msg">
+              <span class="tip st-tip st-tip-warn" style="margin:0;">端口已保存 —— <b>需重启生效</b></span>
+              <button type="button" class="btn btn-primary" id="btn-st-restart">立即重启</button>
+              <span class="hint-text" id="st-restart-msg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">实际监听</div>
+          <div class="st-row-body">
+            <span class="st-value" id="st-listen">—</span>
+            <span class="hint-text st-hint-block">只监听 127.0.0.1（不可配置）—— 不允许暴露到外网。</span>
+          </div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">重启状态</div>
+          <div class="st-row-body">
+            <span class="st-value-plain" id="st-restart-state">无需重启</span>
+            <span class="hint-text st-hint-block">除端口外，密钥 / 开关 / 映射表都是热生效，改完即用。</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 区 3：自动化 ══ -->
+      <section class="panel" id="st-sec-auto">
+        <div class="panel-head">
+          <h2>自动化</h2>
+          <div class="st-head-tags"><span class="st-chip st-chip-now">立即生效</span></div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">自动签到</div>
+          <div class="st-row-body">
+            <div class="st-line">
+              <button type="button" class="st-toggle" id="st-auto-checkin" role="switch" aria-checked="false" aria-label="自动签到"></button>
+              <span class="st-toggle-state" id="st-sum-auto-checkin">自动签到当前：—</span>
+            </div>
+            <span class="hint-text st-hint-block">
+              默认<b>关闭</b>。开启后，服务启动时会立刻给未签到的账号签到一次（按北京时间判定当天），此后每 30 分钟检查一次；关闭后立即停止后续调度。
+            </span>
+          </div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">运行状态</div>
+          <div class="st-row-body">
+            <div class="st-line">
+              <span class="st-toggle-state">已启用/已停用：</span>
+              <span class="st-value-plain" id="st-checkin-state">—</span>
+              <span class="st-toggle-state" style="margin-left:12px;">上次触发：</span>
+              <span class="st-value-plain" id="st-checkin-at">—</span>
+            </div>
+            <div class="st-line" style="margin-top:6px;">
+              <span class="st-toggle-state">结果：</span>
+              <span class="st-value-plain" id="st-checkin-result">—</span>
+            </div>
+            <span class="hint-text st-hint-block">
+              无账号时显示「—」（不会执行、也不会发上游请求）。单账号的签到日期见「账号管理」页。
+            </span>
+          </div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">开机自启</div>
+          <div class="st-row-body">
+            <div class="st-line">
+              <button type="button" class="st-toggle" id="st-auto-start" role="switch" aria-checked="false" aria-label="开机自启"></button>
+              <span class="st-toggle-state" id="st-sum-auto-start">开机自启当前：—</span>
+            </div>
+            <span class="hint-text st-hint-block">
+              默认<b>关闭</b>。开启后写入注册表 <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code>，登录后自动以 <code>serve</code> 启动。
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 区 4：映射表 ══ -->
+      <section class="panel" id="st-sec-alias">
+        <div class="panel-head">
+          <h2>映射表 <span class="count-chip" id="st-alias-count">共 0 条</span></h2>
+          <div class="st-head-tags"><span class="st-chip st-chip-now">立即生效</span></div>
+        </div>
+
+        <div class="tip st-tip st-tip-plain">
+          把长模型名映射成短别名，客户端就能用 <code>dsf</code> 代替 <code>workbuddy/deepseek-v4.1-flash</code>。
+          <b>只解析一层</b>：别名的目标必须是真实模型，<b>不能指向另一个别名</b> —— 否则会形成循环。
+          别名区分大小写，且不能包含「/」。
+        </div>
+
+        <div class="st-alias-wrap">
+          <!-- 已生效（服务端当前状态） -->
+          <div>
+            <div class="st-sub-head">
+              <span class="st-sub-title">当前生效的映射</span>
+              <button type="button" class="btn btn-sm" id="btn-st-alias-add">新增映射</button>
+            </div>
+
+            <div class="st-inline-form st-hidden" id="st-alias-form">
+              <input type="text" class="st-input st-input-alias" id="st-alias-name" placeholder="别名，如 dsf" maxlength="64" spellcheck="false">
+              <span class="st-label">→</span>
+              <input type="text" class="st-input st-input-target" id="st-alias-target" placeholder="目标模型，如 workbuddy/deepseek-v4.1-flash" list="st-model-options" spellcheck="false">
+              <button type="button" class="btn btn-sm" id="btn-st-alias-save">加入草稿</button>
+              <button type="button" class="btn btn-sm" id="btn-st-alias-cancel">取消</button>
+            </div>
+            <span class="st-field-err" id="st-alias-err"></span>
+
+            <table class="tbl">
+              <thead><tr><th class="st-td-alias">别名</th><th class="st-td-target">目标模型</th><th class="st-td-act">操作</th></tr></thead>
+              <tbody id="st-alias-body"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
+
+          <!-- 草稿（本地待提交） -->
+          <div class="st-draft">
+            <div class="st-sub-head">
+              <span class="st-sub-title">待提交的改动</span>
+              <span class="hint-text" id="st-alias-dirty">无未保存改动</span>
+            </div>
+            <table class="tbl">
+              <thead><tr><th class="st-td-state">状态</th><th class="st-td-alias">别名</th><th class="st-td-target">目标模型</th><th class="st-td-act">操作</th></tr></thead>
+              <tbody id="st-alias-draft"><tr><td colspan="4" class="empty">还没有本地改动</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="st-foot-row">
+          <span class="hint-text">「保存映射」会一次性替换整张表；刷新页面 = 放弃未保存的改动。</span>
+          <button type="button" class="btn btn-primary" id="btn-st-alias-batch-save">保存映射</button>
+        </div>
+
+        <div class="st-collapse">
+          <div class="st-sub-head">
+            <span class="st-sub-title">当前可用模型（只读）</span>
+            <span class="st-head-tags">
+              <span class="hint-text" id="st-model-note"></span>
+              <button type="button" class="btn btn-sm" id="btn-st-toggle-models">查看当前可用模型</button>
+            </span>
+          </div>
+          <div class="st-collapse st-hidden" id="st-model-box">
+            <table class="tbl">
+              <thead><tr><th>模型 ID</th></tr></thead>
+              <tbody id="st-model-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 给「目标模型」输入框做候选提示：只列出真实模型 ID，
+             这样正常操作下不会把目标写成另一个别名（那会形成循环） -->
+        <datalist id="st-model-options"></datalist>
+      </section>
+
+    </section>
+
+  </main>
+</div>
+
+<!-- ══════════ 通用模态（单例，内容由 JS 动态填充） ══════════ -->
+<div class="overlay" id="overlay">
+  <div class="modal" role="dialog" aria-modal="true">
+    <button type="button" class="modal-close" id="modal-close" title="关闭（Esc）">×</button>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/panel/app.js"></script>
+<script src="/panel/settings.js"></script>
+<script src="/panel/app.js"></script>
+</body>
+</html>

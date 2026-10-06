@@ -1,0 +1,33 @@
+{
+    "_meta":  {
+                  "note":  "反代应产出的非流式响应形状（由 41 个 reasoning_content 分片 + 1 个 content 分片聚合而成）",
+                  "aggregatedFrom":  "sse-deepseek-v4.1-flash-high.txt"
+              },
+    "id":  "chatcmpl-fixture-0001",
+    "object":  "chat.completion",
+    "created":  1791121212,
+    "model":  "workbuddy/deepseek-v4.1-flash",
+    "choices":  [
+                    {
+                        "index":  0,
+                        "message":  {
+                                        "role":  "assistant",
+                                        "content":  "可用",
+                                        "reasoning_content":  "（41 个分片聚合后的完整思维链）"
+                                    },
+                        "finish_reason":  "stop"
+                    }
+                ],
+    "usage":  {
+                  "prompt_tokens":  35,
+                  "completion_tokens":  43,
+                  "total_tokens":  78,
+                  "completion_tokens_details":  {
+                                                    "reasoning_tokens":  41
+                                                },
+                  "completion_thinking_tokens":  41,
+                  "credit":  0,
+                  "prompt_cache_hit_tokens":  0,
+                  "prompt_cache_miss_tokens":  35
+              }
+}

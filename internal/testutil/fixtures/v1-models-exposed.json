@@ -1,0 +1,99 @@
+{
+    "_meta":  {
+                  "note":  "反代对外暴露的 /v1/models 形状（带 workbuddy/ 前缀 + 档位扩展字段）"
+              },
+    "object":  "list",
+    "data":  [
+                 {
+                     "id":  "workbuddy/space-bunny",
+                     "object":  "model",
+                     "owned_by":  "workbuddy",
+                     "name":  "Space-Bunny",
+                     "context_length":  1000000,
+                     "max_output_tokens":  128000,
+                     "architecture":  {
+                                          "input_modalities":  [
+                                                                   "text",
+                                                                   "image"
+                                                               ],
+                                          "modality":  "text+image-\u003etext"
+                                      },
+                     "reasoning_efforts":  [
+                                               "off",
+                                               "low",
+                                               "medium",
+                                               "high",
+                                               "xhigh",
+                                               "max"
+                                           ],
+                     "reasoning_default":  "high",
+                     "reasoning_verified":  true,
+                     "reasoning_mode":  "knob"
+                 },
+                 {
+                     "id":  "workbuddy/glm-5.3",
+                     "object":  "model",
+                     "owned_by":  "workbuddy",
+                     "name":  "GLM-5.3",
+                     "context_length":  1000000,
+                     "max_output_tokens":  64000,
+                     "architecture":  {
+                                          "input_modalities":  [
+                                                                   "text",
+                                                                   "image"
+                                                               ],
+                                          "modality":  "text+image-\u003etext"
+                                      },
+                     "reasoning_efforts":  [
+                                               "off",
+                                               "high",
+                                               "max"
+                                           ],
+                     "reasoning_default":  "high",
+                     "reasoning_verified":  true,
+                     "reasoning_mode":  "knob-low-flat"
+                 },
+                 {
+                     "id":  "workbuddy/deepseek-v4.1-flash",
+                     "object":  "model",
+                     "owned_by":  "workbuddy",
+                     "name":  "Deepseek-V4.1-Flash",
+                     "context_length":  1000000,
+                     "max_output_tokens":  128000,
+                     "architecture":  {
+                                          "input_modalities":  [
+                                                                   "text",
+                                                                   "image"
+                                                               ],
+                                          "modality":  "text+image-\u003etext"
+                                      },
+                     "reasoning_efforts":  [
+                                               "off",
+                                               "high"
+                                           ],
+                     "reasoning_default":  "high",
+                     "reasoning_verified":  true,
+                     "reasoning_mode":  "switch"
+                 },
+                 {
+                     "id":  "workbuddy/hunyuan-chat",
+                     "object":  "model",
+                     "owned_by":  "workbuddy",
+                     "name":  "Hunyuan-Turbos",
+                     "context_length":  200000,
+                     "max_output_tokens":  8192,
+                     "architecture":  {
+                                          "input_modalities":  [
+                                                                   "text"
+                                                               ],
+                                          "modality":  "text-\u003etext"
+                                      },
+                     "reasoning_efforts":  [
+
+                                           ],
+                     "reasoning_default":  null,
+                     "reasoning_verified":  false,
+                     "reasoning_mode":  "none"
+                 }
+             ]
+}
