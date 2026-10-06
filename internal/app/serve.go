@@ -270,7 +270,7 @@ func runServe(args []string) int {
 		// `TypeError: Failed to fetch`，自动重连 100% 失效（见 health.go 坑 3）。
 		// 所以子进程的白名单 = {旧 origin, 新 origin}，且**每次重启重建**、
 		// 不累积历次旧 origin。
-		pendingID, clientOrigin, _ := deps.restart.takePending()
+		pendingID, clientOrigin, newAddr := deps.restart.takePending()
 		if pendingID == "" {
 			// 正常不会发生（handler 一定先 setPending 再 signal）。
 			// 没有标识就无法完成"四条件"握手，宁可明确失败也不放行。
@@ -285,7 +285,36 @@ func runServe(args []string) int {
 			})
 		}
 
-		if err := relaunchAndHandshake(listenAddr, pendingID, clientOrigin, logger); err != nil {
+		// 🔴 握手必须探测【新】地址，不是本进程正在监听的旧地址。
+		//
+		//	2026-10-07 修真实缺陷：这里原先把 `listenAddr`（**旧**地址）
+		//	传给了 relaunchAndHandshake，而 handler 已经算好的 newAddr
+		//	被 `_` 丢弃。后果（实测复现，日志为证）：
+		//
+		//	  面板改端口 8787 → 4567，点「立即重启」：
+		//	    03:48:13 新进程启动成功，监听 127.0.0.1:4567   ← 一切正常
+		//	    03:48:28 重启失败: 新进程在 15s 内未通过健康检查
+		//	    03:48:28 已恢复到 127.0.0.1:8787               ← 好进程被杀
+		//
+		//	  因为子进程**不带 --addr**（见 relaunchAndHandshake 说明），
+		//	  它按新配置监听 4567；而父进程却去 8787（旧地址）轮询 /healthz
+		//	  ⇒ 15 秒内永远匹配不到 ⇒ 误判失败 ⇒ 端口改动**永不生效**。
+		//
+		//	⚠️ 这个缺陷只在"**端口发生变化**"时暴露：端口不变时
+		//	  新旧地址相同，握手照常成功 —— 所以既有的端到端测试
+		//	  没抓到它（它们验的是"能不能重启"，没验"改端口后能否生效"）。
+		//
+		//	修法：用 handler 计算好的 newAddr（= plannedListenAddr，以配置为准），
+		//	  它与子进程的解析规则**同源**，不会分叉。
+		handshakeAddr := newAddr
+		if handshakeAddr == "" {
+			// 兜底：理论上 setPending 一定会写 newAddr。
+			// 缺了就退回旧地址（端口没变时等价），并明确记日志而不是静默。
+			logger.Printf("⚠️ 本次交接未携带新地址，握手回退到原地址 %s", listenAddr)
+			handshakeAddr = listenAddr
+		}
+
+		if err := relaunchAndHandshake(handshakeAddr, pendingID, clientOrigin, logger); err != nil {
 			// 新进程没能就绪 → 恢复原服务，不能让用户的服务消失。
 			// ⚠️ 恢复时必须【重建后台任务】：上面 stopBackground 已把
 			// 签到守护停掉，只重新 Listen 会得到一个"功能缺一半"的服务
