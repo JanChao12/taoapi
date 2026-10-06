@@ -42,6 +42,20 @@ type acctBehavior struct {
 	// failAfter 在产出第 N 个事件后失败（用于测试"已开始流之后不能换号"）。
 	// 0 表示不中途失败。
 	failAfter int
+
+	// onCall 在"调用已开始、结果尚未返回"的窗口内执行一次。
+	//
+	// 🔴 用途（2026-10-07 加，用于 R1 的**端到端**验证）：
+	//
+	//	R1 的窗口正是"请求在途期间"。只在 store 层构造窗口
+	//	（`failover_stale_test.go` 的前几条）能验证条件提交本身，
+	//	但**验不到"调用方确实传了发请求前的基线"** ——
+	//	而那恰恰是 Codex 特别点名的约束
+	//	（"不能在响应回来后才读 Rev 再提交"）。
+	//
+	//	有了它就能在**真实 TryChat 调用链**里插入
+	//	"删除账号 + 重导入同 UID"，从而端到端证明旧结果不会污染新账号。
+	onCall func()
 }
 
 func newScriptedChatter() *scriptedChatter {
@@ -67,6 +81,10 @@ func (c *scriptedChatter) ChatWithAccount(ctx context.Context, acct *auth.Accoun
 
 	if b == nil {
 		return fmt.Errorf("测试未给账号 %s 配置行为", acct.UID)
+	}
+	// 在"请求在途"窗口内执行副作用（模拟并发的删除/重导入等）
+	if b.onCall != nil {
+		b.onCall()
 	}
 	if b.failWith != nil {
 		return b.failWith

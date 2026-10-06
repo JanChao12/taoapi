@@ -834,7 +834,13 @@ func TestManualDisabledIsNeverAutoCleared(t *testing.T) {
 	//
 	// ⚠️ 2026-10-07：clearAccountFailure 现在只收 UID（写操作在锁内做），
 	//	所以这里改传 UID；读回也要用快照（不再拿共享指针）。
-	clearAccountFailure(fx.deps(), "uid-d")
+	//
+	// ⚠️ 2026-10-07 修 R1 后它还要一个**版本基线**：取当前 Rev 传进去，
+	//	模拟"本次请求开始时的版本"（条件提交才会被接受）。
+	//	本测试关注的是"人工禁用不被覆盖"，与版本时序无关，
+	//	故取当前版本即可。
+	rev, _ := fx.store.Rev("uid-d")
+	clearAccountFailure(fx.deps(), "uid-d", rev)
 	after, _ := fx.store.Snapshot("uid-d")
 	if !after.ManualDisabled {
 		t.Error("clearAccountFailure 解开了人工禁用 —— 人工设置必须不被自动逻辑覆盖")

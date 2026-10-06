@@ -253,11 +253,24 @@ func runDueCheckins(deps Deps, stop <-chan struct{}) (ok, failed int, skippedNoA
 		res, err := p.Checkin(ctx, "")
 		cancel()
 
+		// 🔴 R1 同类洞（2026-10-07 一并修，属**范围扩大**，已如实记录）：
+		//
+		//	下面三个写点原来都是**无条件** `Mutate(uid, …)`。
+		//	而上面刚做过一次**网络调用**（Checkin）——期间账号可能被
+		//	删除后重导入（同 UID、新对象），于是签到结果会写到**新账号**上。
+		//	这与 R1 的 ① 是同一类缺陷，只是发生在签到路径
+		//	（Codex 的 R1 描述只点名了 record/clearAccountFailure）。
+		//
+		//	⇒ 统一改用 `MutateIfRev(uid, baseRev, …)` 条件提交。
+		//	  `baseRev` 取自**本次快照**（`a.Rev`），即"发请求之前"的基线，
+		//	  绝不是响应回来后才读的版本。
+		baseRev := a.Rev
+
 		switch {
 		case err != nil:
 			failed++
 			deps.logf("[auto-checkin] %s 失败: %v", a.Redact(), err)
-			deps.Accounts.Mutate(a.UID, func(x *auth.Account) bool {
+			deps.Accounts.MutateIfRev(a.UID, baseRev, func(x *auth.Account) bool {
 				x.LastError = "自动签到失败: " + err.Error()
 				x.LastObservedAt = time.Now()
 				return true
@@ -265,7 +278,7 @@ func runDueCheckins(deps Deps, stop <-chan struct{}) (ok, failed int, skippedNoA
 		case res.AlreadyCheckedIn:
 			// 幂等成功，记录签到日
 			ok++
-			deps.Accounts.Mutate(a.UID, func(x *auth.Account) bool {
+			deps.Accounts.MutateIfRev(a.UID, baseRev, func(x *auth.Account) bool {
 				x.CheckinDay = today
 				x.CheckinAt = time.Now()
 				return true
@@ -273,7 +286,7 @@ func runDueCheckins(deps Deps, stop <-chan struct{}) (ok, failed int, skippedNoA
 			deps.logf("[auto-checkin] %s 今日已签（幂等）", a.Redact())
 		default:
 			ok++
-			deps.Accounts.Mutate(a.UID, func(x *auth.Account) bool {
+			deps.Accounts.MutateIfRev(a.UID, baseRev, func(x *auth.Account) bool {
 				x.CheckinDay = today
 				x.CheckinAt = time.Now()
 				x.LastError = ""

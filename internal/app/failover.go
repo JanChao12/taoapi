@@ -155,10 +155,22 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 
 		// 传快照的地址给 probeOnce：它在整次尝试内只读，不写回仓库。
 		acct := &snap
+
+		// 🔴 R1（2026-10-07 修）：**在发请求之前**取版本基线。
+		//
+		//	snap 是快照，其 Rev 正是"取快照那一刻"的仓库版本。
+		//	下面所有回写都用 `MutateIfRev(uid, baseRev, …)` ——
+		//	期间账号被改过/删除后重导入，版本就对不上，过期结果被丢弃。
+		//
+		//	🔴 **绝不能**在响应回来后再读 Rev 当基线：
+		//	   那等于把"现在的版本"冒充成"发请求时的版本"，
+		//	   无论期间发生过什么都会匹配成功 —— 保护等于没有。
+		baseRev := snap.Rev
+
 		sess, err := probeOnce(ctx, chatter, acct, req)
 		if err == nil {
-			// 成功：清掉上次的失败痕迹（只传 UID，锁内改）
-			clearAccountFailure(deps, picked.ID)
+			// 成功：清掉上次的失败痕迹（条件提交，见 R1 说明）
+			clearAccountFailure(deps, picked.ID, baseRev)
 			if attempt > 1 {
 				deps.logf("已换用账号 %s 成功", auth.MaskUID(acct.UID))
 			}
@@ -166,7 +178,7 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 		}
 		lastErr = err
 
-		if !recordAccountFailure(deps, picked.ID, err) {
+		if !recordAccountFailure(deps, picked.ID, baseRev, err) {
 			// 该错误换号也解决不了（如档位不支持）——立即返回
 			return nil, err
 		}
@@ -308,7 +320,19 @@ func probeStream(ctx context.Context,
 //
 //	传指针就要求调用方先 `Get()`，那正是"共享指针逃逸"的来源。
 //	改成只传 UID，回调里自己查 —— 调用方拿不到指针，也就没法绕开锁。
-func recordAccountFailure(deps Deps, uid string, err error) bool {
+//
+// 🔴 R1（2026-10-07 修）：`baseRev` 是**发请求之前**取的版本基线，
+// 回写走 `MutateIfRev` 条件提交。原来的 `Mutate` 是无条件的，会有两个洞：
+//
+//	① **同 UID 重导入**：请求在途时账号被删除、又导入了同一个 UID
+//	   （新对象、新版本），旧的失败记录会写到**全新的账号**上。
+//	② **覆盖更新的状态**：请求在途时另一个来源（如额度刷新）
+//	   已经把账号标成了新状态，旧的失败记录仍会覆盖它。
+//
+//	返回"是否应该换号重试"的语义**不因版本不匹配而改变**：
+//	换号决策依赖的是**本次错误本身**，与"回写是否被接受"无关 ——
+//	否则一次版本抖动会让本该换号的请求直接失败。
+func recordAccountFailure(deps Deps, uid string, baseRev uint64, err error) bool {
 	// 换号也解决不了的错误：不改账号状态（不是账号的错），直接返回
 	if isNonRetryable(err) {
 		return false
@@ -318,7 +342,7 @@ func recordAccountFailure(deps Deps, uid string, err error) bool {
 	now := nowFunc()
 
 	if deps.Accounts != nil {
-		deps.Accounts.Mutate(uid, func(a *auth.Account) bool {
+		deps.Accounts.MutateIfRev(uid, baseRev, func(a *auth.Account) bool {
 			a.Status = status
 			a.StatusReason = reason
 			a.LastError = reason
@@ -342,12 +366,22 @@ func recordAccountFailure(deps Deps, uid string, err error) bool {
 //
 //	再**无锁写 5 个字段** —— 一个完全无锁的 read-modify-write。
 //	现在整个"判断 + 写入"都在同一个受锁回调内完成（原子）。
-func clearAccountFailure(deps Deps, uid string) {
+//
+// 🔴 R1（2026-10-07 修）：改用 `MutateIfRev` 条件提交。
+//
+//	这是 R1 的第二个洞，也是最隐蔽的一个：
+//	一次 chat **成功**返回时，如果期间账号已被别的来源标成
+//	`rate_limited`（例如并发的额度刷新），原来的无条件清除会把
+//	**更新的失败状态抹掉** —— 用一次"基于旧前提的成功"覆盖了新事实。
+//	版本不匹配就丢弃这次清除。
+//
+//	`baseRev` 必须是**发请求之前**取的基线，不能响应回来再读（见调用方说明）。
+func clearAccountFailure(deps Deps, uid string, baseRev uint64) {
 	if deps.Accounts == nil {
 		return
 	}
 	now := nowFunc()
-	changed := deps.Accounts.Mutate(uid, func(a *auth.Account) bool {
+	changed, _ := deps.Accounts.MutateIfRev(uid, baseRev, func(a *auth.Account) bool {
 		// 判断与写入在**同一次持锁**内 ⇒ 不会与并发写交错
 		if a.Status.Normalize() == pool.StatusNormal &&
 			a.StatusReason == "" && a.LastError == "" {
