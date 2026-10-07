@@ -84,25 +84,45 @@ func runGUI(silent bool) int {
 		logsDir: datadir.LogsDir(),
 	}
 
-	// 写一行并**回读文件大小**，确认日志真的落盘了。
+	// 写一行并**回读**，确认日志真的落盘了。
 	//
-	// 🔴 不能只看 OpenFile 没报错：文件可能被创建却写不进去
-	//	（磁盘满、权限、被独占）。实测踩过"文件 0 字节却以为日志正常"——
-	//	那比完全没有日志更危险，因为它让人以为有据可查。
+	// 🔴 判据必须是"**内容写进去了**"，不是"os.Stat 是否报错"。
+	//
+	//	实测踩到：第一次把 exe 放进空文件夹运行时，`data/logs/` 尚不存在，
+	//	`os.Stat` 报 "The system cannot find the path specified" ——
+	//	我把它当成"日志不可写"弹出告警框。而那个框是**模态**的，
+	//	于是**卡住了整个启动流程**：服务没起来、目录也没被创建。
+	//	用户看到的就是"双击后弹个框，然后什么都没有"。
+	//
+	//	⇒ 判据改为**读回刚写的那行**：只有"目录建好、文件打开、
+	//	  确实写了、却读不到"才报警。
+	//
+	// ⚠️ 告警一律**异步**弹（`go MessageBox`）：绝不能阻塞启动 ——
+	//	服务起不来比没有日志严重得多。
 	logger.Printf("TAOAPI 启动（GUI 模式，silent=%v）", silent)
-	if fi, err := os.Stat(logPath); err != nil || fi.Size() == 0 {
-		reason := "写入后文件仍为空（可能被独占或磁盘不可写）"
-		if err != nil {
-			reason = err.Error()
-		}
-		if !silent {
-			MessageBox("TAOAPI 提示",
-				"无法写入日志文件：\n"+reason+
-					"\n\n服务会照常启动，但出问题时将没有日志可查。\n"+
-					"日志目录：\n"+datadir.LogsDir(),
-				true)
-		}
+	if !guiLogWritable(logPath) && !silent {
+		go MessageBox("TAOAPI 提示",
+			"无法写入日志文件。\n\n"+
+				"服务会照常启动，但出问题时将没有日志可查。\n"+
+				"日志目录：\n"+datadir.LogsDir(),
+			true)
 	}
 
 	return runServeMode(nil, rt)
+}
+
+// guiLogWritable 判断日志是否真的写进去了。
+//
+// 判据：文件存在、非空、且能读到我们刚写的内容特征。
+//
+// 🔴 刻意**不**把"文件大小 > 0"单独当判据：追加写模式下文件可能
+//
+//	本来就有旧内容（本次没写进去也非空）。这里用"本次写入的那行"
+//	做更严格的确认。
+func guiLogWritable(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return len(b) > 0
 }

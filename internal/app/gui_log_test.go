@@ -160,3 +160,69 @@ func TestGUIloggerCleanupReleasesFile(t *testing.T) {
 		t.Fatalf("🔴 cleanup 后文件仍被占用（句柄泄漏）: %v", err)
 	}
 }
+
+// TestGUIloggerCreatesMissingDirs 守：**父目录不存在时也能写日志**。
+//
+// 🔴 这是"换个文件夹就必现"的真实缺陷（2026-10-07 委托方实测）：
+//
+//	把 exe 单独复制到一个空文件夹里双击运行 ⇒ `data/logs/` 尚不存在
+//	⇒ `os.OpenFile` 失败（The system cannot find the path specified）
+//	⇒ 弹出"无法写入日志文件"的**模态**告警框 ⇒ **卡住整个启动**
+//	（服务没起来、目录也没被创建）。
+//	用户看到的就是"双击后弹个框，然后什么都没有"。
+//
+// ⇒ newGUIlogger 必须自己 MkdirAll，不能指望调用方先建好。
+func TestGUIloggerCreatesMissingDirs(t *testing.T) {
+	base := t.TempDir()
+	// 模拟"全新文件夹"：多层不存在的路径
+	deep := filepath.Join(base, "fresh", "data", "logs", "wbapi-x.log")
+
+	lg, cleanup := newGUIlogger(deep)
+	defer cleanup()
+	lg.Printf("全新文件夹里的第一行日志")
+
+	if _, err := os.Stat(deep); err != nil {
+		t.Fatalf("🔴 父目录不存在时没能创建日志文件: %v", err)
+	}
+	got, err := os.ReadFile(deep)
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	if !strings.Contains(string(got), "全新文件夹里的第一行日志") {
+		t.Fatalf("日志内容 = %q，期望含写入的那行", got)
+	}
+}
+
+// TestGUILogWritableJudgement 守"日志是否可写"的判据。
+//
+// 🔴 判据必须基于**内容**，而不是 os.Stat 是否报错：
+//
+//	我第一版用 `os.Stat(logPath)` 判错，于是"父目录还没建"被误判成
+//	"日志不可写" ⇒ 假告警 + 模态框阻塞启动。真正该问的是
+//	"写进去的东西能不能读回来"。
+func TestGUILogWritableJudgement(t *testing.T) {
+	dir := t.TempDir()
+
+	// ① 不存在的文件 ⇒ 不可写
+	if guiLogWritable(filepath.Join(dir, "nope.log")) {
+		t.Error("不存在的文件应判为不可写")
+	}
+
+	// ② 空文件 ⇒ 不可写（写了但没内容，等于没日志）
+	empty := filepath.Join(dir, "empty.log")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if guiLogWritable(empty) {
+		t.Error("空文件应判为不可写")
+	}
+
+	// ③ 有内容 ⇒ 可写
+	ok := filepath.Join(dir, "ok.log")
+	if err := os.WriteFile(ok, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !guiLogWritable(ok) {
+		t.Error("有内容的文件应判为可写")
+	}
+}

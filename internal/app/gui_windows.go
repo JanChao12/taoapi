@@ -153,6 +153,18 @@ func newGUIlogger(path string) (*log.Logger, func()) {
 		return log.New(os.Stderr, "wbapi ", log.LstdFlags|log.Lmsgprefix), func() {}
 	}
 
+	// 🔴 **必须先建目录**（实测踩到，且是"换个文件夹就必现"的坑）：
+	//
+	//	第一次把 exe 单独放到一个空文件夹里运行时，`data/logs/` 还不存在，
+	//	直接 `os.OpenFile` 会失败（The system cannot find the path specified），
+	//	于是日志拿不到、用户看到"无法写入日志文件"的**假告警**，
+	//	并且那个模态框会**卡住启动流程**（服务实际没起来）。
+	//
+	//	⇒ 在这里 MkdirAll，而不是指望调用方先建好。
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return log.New(os.Stderr, "wbapi ", log.LstdFlags|log.Lmsgprefix), func() {}
+	}
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		// 文件打不开 ⇒ 退回 stderr（GUI 下可能同样不可用，但至少不崩）
