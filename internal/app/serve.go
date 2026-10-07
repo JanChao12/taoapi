@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -50,7 +51,26 @@ func runServe(args []string) int {
 //	"数据目录逻辑在 4 处各写一遍"）。
 //
 //	⇒ 只把"托盘/弹窗/日志去向"作为参数注入，其余完全共用。
-func runServeMode(args []string, rt *guiRuntime) int {
+//
+// serveFlags 保存 serve 子命令解析出来的 flag 值。
+type serveFlags struct {
+	addr        *string
+	verbose     *bool
+	silent      *bool
+	restartID   *string
+	panelOrigin *string
+	fs          *flag.FlagSet
+}
+
+// newServeFlagSet 构造 serve 的 flag 集合。
+//
+// 🔴 抽出来是为了**可测**：`TestServeAcceptsSilentFlag` 要断言
+//
+//	`--silent` 被真的定义过。不抽出来的话，测试只能去真的跑
+//	runServe（会起服务并阻塞，无法在单测里用）——
+//	而"flag 没定义"这个缺陷的症状极隐蔽：
+//	开机自启因 unknown flag **静默退出**，用户只看到"开机后服务没起来"。
+func newServeFlagSet() *serveFlags {
 	fs := flag.NewFlagSet(CmdServe, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -60,6 +80,15 @@ func runServeMode(args []string, rt *guiRuntime) int {
 	// 配置里改的端口会被无声覆盖（Codex 第 9 轮明确指出这个坑）。
 	addr := fs.String("addr", "", "监听地址（只用回环；缺省用设置里的端口）")
 	verbose := fs.Bool("v", false, "输出更详细的日志")
+
+	// --silent：静默启动（开机自启用），不弹提示框。
+	//
+	// 🔴 命令行模式（`wbapi serve`）下它只是**被接受** ——
+	//	因为命令行模式本来就不弹窗（弹窗只发生在 GUI 模式）。
+	//	但必须**接受**它：开机自启注册的命令行是 `serve --silent`，
+	//	若不识别这个 flag，自启会因"flag provided but not defined"退出，
+	//	表现为"开机后服务没起来"（且没有任何提示，极难排查）。
+	silent := fs.Bool("silent", false, "静默启动：不弹提示框（开机自启用）")
 
 	// --restart-id 由父进程在重启交接时传入（见 restart.go）。
 	//
@@ -73,6 +102,21 @@ func runServeMode(args []string, rt *guiRuntime) int {
 	// 探测**新**端口时会拿到 `TypeError: Failed to fetch`（浏览器拒绝读取），
 	// 自动重连 100% 失效 —— 详见 health.go 坑 3。
 	panelOrigin := fs.String("panel-origin", "", "（内部使用）面板当前 origin")
+
+	return &serveFlags{
+		addr: addr, verbose: verbose, silent: silent,
+		restartID: restartID, panelOrigin: panelOrigin, fs: fs,
+	}
+}
+
+func runServeMode(args []string, rt *guiRuntime) int {
+	sf := newServeFlagSet()
+	fs := sf.fs
+	addr := sf.addr
+	verbose := sf.verbose
+	silent := sf.silent
+	restartID := sf.restartID
+	panelOrigin := sf.panelOrigin
 
 	// ⚠️ 这里**故意没有** --addr-override（我一度加过，是错的，已撤）。
 	//
@@ -101,6 +145,22 @@ func runServeMode(args []string, rt *guiRuntime) int {
 		logger = rt.logger
 	} else {
 		logger = log.New(os.Stderr, "wbapi ", log.LstdFlags|log.Lmsgprefix)
+	}
+
+	// 🔴 `serve --silent`（开机自启注册的命令行）也要有 GUI 运行时 ——
+	//	否则开机后：没有托盘图标、日志只写 stderr（GUI 子系统下无处可去）。
+	//
+	//	⚠️ 但**不弹提示**（silent=true）—— 这正是该 flag 的意义。
+	if rt == nil && *silent {
+		rt = &guiRuntime{enabled: true, silent: true}
+		// 日志落文件（与 runGUI 同样的理由：GUI 子系统没有控制台）
+		logPath := filepath.Join(datadir.LogsDir(),
+			"wbapi-"+nowFunc().Format("2006-01-02")+".log")
+		var closeLog func()
+		logger, closeLog = newGUIlogger(logPath)
+		defer closeLog()
+		rt.logger = logger
+		rt.logsDir = datadir.LogsDir()
 	}
 
 	// ── 一次性数据迁移（老位置 → exe 同目录）──

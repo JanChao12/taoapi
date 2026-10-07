@@ -48,8 +48,27 @@ const runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
 
 // DefaultArgs 是注册自启时使用的默认命令行参数。
 //
-// 与 cmd/wbapi 的默认子命令保持一致：启动本地服务。
-var DefaultArgs = []string{"serve"}
+// 🔴 2026-10-07 改为带 `--silent`（委托方要求：开机自启**不弹窗**）：
+//
+//	手动双击时弹一次提示告知面板地址（用户想看）；
+//	开机自启是**后台行为**，弹窗会打断用户登录后的操作。
+//
+//	⇒ 自启注册的命令行必须带 `--silent`，由 GUI 模式据此跳过 MessageBox。
+//
+// ⚠️ 用 `serve --silent` 而不是裸 `--silent`：
+//
+//	`serve` 是明确的子命令，语义更清楚，且与既有注册项兼容
+//	（`Enable` 是幂等的：重新 Enable 会用新参数覆盖旧值，
+//	 已装老版本的用户点一次"开机自启"即可升级成静默）。
+var DefaultArgs = []string{"serve", FlagSilent}
+
+// FlagSilent 是"静默启动"标志，与 internal/app.FlagSilent 必须一致。
+//
+// ⚠️ 刻意**不 import internal/app**：autostart 是底层工具包，
+//
+//	反向依赖 app 会造成不该有的耦合（且 app 会 import autostart）。
+//	两边是同一个小字符串常量，用一个测试钉住一致性即可。
+const FlagSilent = "--silent"
 
 // ErrUnsupported 表示当前平台不支持注册表开机自启。
 //
