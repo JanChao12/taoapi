@@ -186,10 +186,42 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
-// TestRunNoArgs 无参数时应打印用法并返回 2。
+// TestRunNoArgs 无参数时的行为**取决于是否 GUI 模式**。
+//
+// 🔴 契约在 2026-10-07 变了（委托方要求，照 wild-work）：
+//
+//	改造前：无参数 → 打印用法、退出码 2
+//	改造后：无参数 → **GUI 模式**（起服务 + 托盘 + 弹提示）
+//
+//	所以"无参数"到底做什么，由 `useGUIForNoArgs()` 决定：
+//	  · 生产（双击 exe）⇒ GUI 模式
+//	  · 测试（WBAPI_NO_GUI=1）⇒ 退回打印用法 + 2
+//
+//	⚠️ 这里**必须显式设 WBAPI_NO_GUI=1**：否则会真的去起服务、
+//	  建托盘窗口，把测试**永久挂住**（实测挂到 121 秒超时），
+//	  还可能真绑上 8787 端口污染开发机实例。
 func TestRunNoArgs(t *testing.T) {
+	t.Setenv("WBAPI_NO_GUI", "1")
 	if code := Run(nil); code != 2 {
-		t.Errorf("无参数退出码 = %d，期望 2", code)
+		t.Errorf("非 GUI 模式下无参数退出码 = %d，期望 2（打印用法）", code)
+	}
+}
+
+// TestRunNoArgsInGUIEnvironmentEntersGUIMode 守：GUI 环境下无参数**不进 usage**。
+//
+// ⚠️ 不能真的调用 Run(nil)（会起服务并阻塞）—— 所以这里只断言
+//
+//	"决定是否进 GUI"的判定函数本身。真正的 GUI 行为由人工实测覆盖
+//	（托盘需要真实通知区，自动化测试拿不到）。
+func TestRunNoArgsInGUIEnvironmentEntersGUIMode(t *testing.T) {
+	t.Setenv("WBAPI_NO_GUI", "")
+	if !useGUIForNoArgs() {
+		t.Fatal("未设 WBAPI_NO_GUI 时应判定为 GUI 模式（双击 exe 的路径）")
+	}
+
+	t.Setenv("WBAPI_NO_GUI", "1")
+	if useGUIForNoArgs() {
+		t.Fatal("设了 WBAPI_NO_GUI 时应判定为非 GUI（测试路径）")
 	}
 }
 

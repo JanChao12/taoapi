@@ -32,7 +32,25 @@ import (
 )
 
 // runServe 启动 HTTP 服务并阻塞直到收到退出信号。
+//
+// 命令行入口（`wbapi serve`）：rt 为 nil，表示**非 GUI 模式**
+// （不挂托盘、不弹提示、日志走 stderr）。
 func runServe(args []string) int {
+	return runServeMode(args, nil)
+}
+
+// runServeMode 是 serve 的完整实现，带可选的 GUI 运行时。
+//
+// 🔴 为什么把 GUI 模式也走这里、而不是另写一份 main：
+//
+//	serve 里有端口解析（flag > 配置）、重启交接与健康握手、
+//	drain 超时、"重启失败要恢复并重建后台任务"等一大堆
+//	已经被测试和真实验收覆盖过的逻辑。GUI 模式若复制一份，
+//	两边必然逐渐分叉（这是本项目已经踩过的教训：
+//	"数据目录逻辑在 4 处各写一遍"）。
+//
+//	⇒ 只把"托盘/弹窗/日志去向"作为参数注入，其余完全共用。
+func runServeMode(args []string, rt *guiRuntime) int {
 	fs := flag.NewFlagSet(CmdServe, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -77,7 +95,13 @@ func runServe(args []string) int {
 		return 2
 	}
 
-	logger := log.New(os.Stderr, "wbapi ", log.LstdFlags|log.Lmsgprefix)
+	var logger *log.Logger
+	if rt != nil && rt.logger != nil {
+		// GUI 模式：日志已改为"写文件 + stderr"（GUI 子系统没有控制台）
+		logger = rt.logger
+	} else {
+		logger = log.New(os.Stderr, "wbapi ", log.LstdFlags|log.Lmsgprefix)
+	}
 
 	// ── 一次性数据迁移（老位置 → exe 同目录）──
 	//
@@ -197,6 +221,17 @@ func runServe(args []string) int {
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wbapi serve: 监听 %s 失败: %v\n", srv.Addr, err)
+		// 🔴 GUI 模式（双击启动）没有控制台，必须弹窗告知失败原因 ——
+		// 否则用户双击后"什么都没发生"，完全无从排查。
+		if rt != nil && !rt.silent {
+			MessageBox("TAOAPI 启动失败",
+				"无法监听 "+srv.Addr+"：\n"+err.Error()+
+					"\n\n常见原因：\n"+
+					"· 该端口已被其他程序占用\n"+
+					"· 上一次的 wbapi 进程还在运行\n\n"+
+					"可在「设置」页改端口，或先结束占用该端口的进程。",
+				true)
+		}
 		return 1
 	}
 
@@ -212,7 +247,71 @@ func runServe(args []string) int {
 			Version, MaxConcurrentStreams, UpstreamChatBase)
 	}
 
-	// 自动签到状态由 buildDeps 根据设置打印（默认关闭），此处不再重复
+	// ── 信号与托盘退出通道 ──
+	//
+	// ⚠️ 必须在托盘回调**之前**建好：托盘"退出"要往 sigCh 投递一个合成信号，
+	//	复用 Ctrl+C 那条已验证的优雅关闭路径（而不是另写一套关闭逻辑）。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	// ── GUI 模式：挂托盘 + 手动启动弹一次提示 ──
+	//
+	// 🔴 顺序：**先挂托盘，再弹提示**。
+	//
+	//	弹窗是**阻塞**的（模态），若先弹提示、用户不点确定就一直卡在那，
+	//	托盘图标也不出现 —— 用户会以为程序没起来。
+	//	反过来先挂托盘，提示框后面弹，用户点掉即有完整功能。
+	trayStop := func() {}
+	if rt != nil && rt.enabled {
+		baseURL := "http://" + ln.Addr().String()
+		stop, terr := startTray(trayOptions{
+			Logger:  logger,
+			BaseURL: baseURL,
+			LogsDir: rt.logsDir,
+			Tip:     fmt.Sprintf("TAOAPI —— %s", baseURL),
+			OnQuit: func() {
+				// 托盘"退出"：触发与 Ctrl+C 相同的优雅关闭路径
+				logger.Printf("收到托盘退出请求，正在关闭…")
+				select {
+				case sigCh <- sigQuitFromTray:
+				default:
+				}
+			},
+		})
+		if terr != nil {
+			// 托盘挂不上不该让服务起不来 —— 明确记日志（+ 提示框），继续服务
+			logger.Printf("⚠️ 托盘图标启动失败（服务继续运行）: %v", terr)
+			if !rt.silent {
+				MessageBox("TAOAPI 提示",
+					"服务已启动，但托盘图标创建失败：\n"+terr.Error()+
+						"\n\n面板地址：\n"+baseURL+"/panel/",
+					true)
+			}
+		} else {
+			trayStop = stop
+			logger.Printf("托盘图标已就绪（左键打开面板，右键菜单）")
+		}
+
+		// 手动启动才弹提示；`--silent`（开机自启）不打扰
+		//
+		// 🔴 弹窗**必须异步**（放到 goroutine 里）：
+		//
+		//	MessageBox 是**模态阻塞**的 —— 用户不点"确定"就一直停在那。
+		//	我第一版把它放在这里同步调用，而 `srv.Serve(ln)` 在它**后面**
+		//	才执行 ⇒ 端口已 Listen 但**从未开始服务**：
+		//	  实测现象 = 端口在 Listen、healthz 超时、日志 0 字节。
+		//	（日志 0 字节是因为第一行日志排在 Serve 之后。）
+		//
+		//	⇒ 改为后台 goroutine 弹窗，主流程继续去 Serve。
+		if !rt.silent {
+			promptText := "OpenAI 兼容 API 地址：\n" + baseURL + "/v1" +
+				"\n\n管理面板：\n" + baseURL + "/panel/" +
+				"\n\n· 托盘图标：左键打开主界面，右键菜单\n" +
+				"· 关闭服务：托盘右键「退出」\n" +
+				"· 日志目录：" + rt.logsDir
+			go MessageBox("TAOAPI 已启动", promptText, false)
+		}
+	}
 
 	// 优雅退出
 	errCh := make(chan error, 1)
@@ -222,8 +321,12 @@ func runServe(args []string) int {
 		}
 	}()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	// 退出前把托盘图标摘掉。
+	//
+	// 🔴 必须摘：否则通知区会留下一个**点不动的幽灵图标**，
+	//	用户只能把鼠标划过去等它消失（这是托盘程序最常见的坏体验）。
+	//	用 defer 保证所有退出路径都摘（包括异常返回）。
+	defer trayStop()
 
 	// 面板「立即重启」用它打断阻塞：设置页改了端口后需要重启才生效。
 	// restartCh 在装配阶段已创建并放进 deps（handler 也要用到同一个），
