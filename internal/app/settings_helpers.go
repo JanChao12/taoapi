@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"workbuddy.local/workbuddy-api/internal/config"
+	"workbuddy.local/workbuddy-api/internal/datadir"
 )
 
 // settingsBodyMaxBytes 是设置请求体的上限。
@@ -35,16 +34,15 @@ func decodeJSONBody(r *http.Request, v any) error {
 	return json.Unmarshal(body, v)
 }
 
-// dataDir 返回数据目录（配置文件与账号文件所在）。
+// dataDir 返回数据目录。
+//
+// 🔴 2026-10-07 改：位置由 `internal/datadir` 统一决定
+// （**exe 同目录**，照 wild-work 布局；见该包注释）。
+//
+// 原先这里自己拼了一遍 `~/.wbapi`，与 auth/config/usage 三处重复 ——
+// 四份实现必须永远一致，否则会出现"账号落在 A、配置落在 B"。
 func dataDir() string {
-	if d := os.Getenv("WBAPI_DATA_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".wbapi"
-	}
-	return filepath.Join(home, ".wbapi")
+	return datadir.Root()
 }
 
 // listenAddrForPort 由端口拼出实际监听地址。

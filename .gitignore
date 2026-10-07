@@ -25,12 +25,33 @@
 *.tmp
 
 # 凭据与运行时数据 —— 绝不入库
+#
+# 🔴 2026-10-07：数据目录改为**exe 同目录**（照 wild-work 布局）。
+#    而 exe 平时就在仓库根目录里（开发时），所以下面这些路径
+#    等价于"仓库根下的数据目录" —— 一旦漏掉任何一条，
+#    `git add -A` 就会把**加密凭据**连同配置一起提交进历史。
+#
+#    布局（见 internal/datadir 包注释）：
+#      <root>/config.json          ← 含 apiKey
+#      <root>/auths/accounts.json  ← 凭据（DPAPI 加密，但仍是唯一副本）
+#      <root>/data/events/*.jsonl  ← 用量流水
+#      <root>/data/logs/, reports/
 /auths/
+/auths/**
+/accounts.json
+/accounts.json.tmp*
+/config.json
+/config.json.tmp*
+/config.json.bak*
+/config.json.corrupt-*
+/data/
 /data/state.json
 /data/events/
 /data/reports/
-/accounts.json
-/accounts.json.tmp*
+/data/logs/
+/data/*.log
+# 迁移过程的临时文件（datadir.copyFile 的中间产物）
+*.migrate*
 *.token
 *.secret
 .env

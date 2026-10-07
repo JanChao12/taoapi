@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 
+	"workbuddy.local/workbuddy-api/internal/datadir"
 	"workbuddy.local/workbuddy-api/internal/storage"
 )
 
@@ -327,18 +327,11 @@ func (p *Persister) decode(da diskAcct) (*Account, error) {
 }
 
 // AccountsPath 返回默认账号文件路径。
+//
+// 🔴 2026-10-07 改：位置由 `internal/datadir` 统一决定
+// （exe 同目录下的 `auths/accounts.json`，见该包注释）。
+// 原先这里自己拼了一遍 `~/.wbapi`，与 config/usage/app 三处重复 ——
+// 四份实现必须永远一致，否则会出现"账号落在 A、配置落在 B"。
 func AccountsPath() string {
-	return filepath.Join(defaultDir(), "accounts.json")
-}
-
-// defaultDir 返回数据目录。
-func defaultDir() string {
-	if d := os.Getenv("WBAPI_DATA_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".wbapi"
-	}
-	return filepath.Join(home, ".wbapi")
+	return datadir.AccountsPath()
 }

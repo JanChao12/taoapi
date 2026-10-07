@@ -1,6 +1,7 @@
 // Package config 管理本程序的本地设置（面板「设置」页读写的就是它）。
 //
-// 落盘位置：%USERPROFILE%\.wbapi\config.json（与 accounts.json 同目录）。
+// 落盘位置：**exe 同目录**下的 `config.json`
+// （2026-10-07 起，照 wild-work 布局；位置统一由 `internal/datadir` 决定）。
 //
 // 设计取舍（经 DSH × Codex 第 9 轮评审确认）：
 //
@@ -32,12 +33,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"workbuddy.local/workbuddy-api/internal/datadir"
 	"workbuddy.local/workbuddy-api/internal/storage"
 )
 
@@ -159,15 +160,11 @@ func NewInMemory() *Store {
 }
 
 // Path 返回配置文件路径。
+//
+// 🔴 2026-10-07 改：位置由 `internal/datadir` 统一决定
+// （exe 同目录下的 `config.json`，见该包注释）。
 func Path() string {
-	if d := os.Getenv("WBAPI_DATA_DIR"); d != "" {
-		return filepath.Join(d, "config.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".wbapi", "config.json")
-	}
-	return filepath.Join(home, ".wbapi", "config.json")
+	return datadir.ConfigPath()
 }
 
 // Load 读取配置；文件不存在时用默认值并【立即写盘】（让用户能看到这个文件）。

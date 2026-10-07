@@ -24,6 +24,7 @@ import (
 
 	"workbuddy.local/workbuddy-api/internal/auth"
 	"workbuddy.local/workbuddy-api/internal/config"
+	"workbuddy.local/workbuddy-api/internal/datadir"
 	"workbuddy.local/workbuddy-api/internal/provider"
 	"workbuddy.local/workbuddy-api/internal/provider/workbuddy"
 	"workbuddy.local/workbuddy-api/internal/router"
@@ -77,6 +78,31 @@ func runServe(args []string) int {
 	}
 
 	logger := log.New(os.Stderr, "wbapi ", log.LstdFlags|log.Lmsgprefix)
+
+	// ── 一次性数据迁移（老位置 → exe 同目录）──
+	//
+	// 2026-10-07：数据目录改为 exe 同目录（照 wild-work 布局）。
+	// 老用户的数据在 `%USERPROFILE%\.wbapi`，首次在新位置启动时搬过来。
+	//
+	// 🔴 迁移是**复制**而不是移动、且**不覆盖**目标已有文件、
+	//	**不解析 JSON**（见 datadir.Migrate 的安全原则）——
+	//	动的是唯一凭据副本，任何"聪明"的处理都可能丢号。
+	if res := datadir.Migrate(); res.Performed {
+		logger.Printf("首次启动：已从旧目录迁移数据 %s → %s", res.From, res.To)
+		if len(res.Moved) > 0 {
+			logger.Printf("  已迁移 %d 个文件：%v", len(res.Moved), res.Moved)
+		}
+		if len(res.Skipped) > 0 {
+			// 跳过而不是覆盖：目标已有更新的数据
+			logger.Printf("  跳过 %d 个已存在的文件（未覆盖）：%v",
+				len(res.Skipped), res.Skipped)
+		}
+		for _, e := range res.Errors {
+			logger.Printf("  ⚠️ 迁移失败: %s", e)
+		}
+		// 旧目录保留不删 —— 迁移出问题时用户还有原始数据
+		logger.Printf("  旧目录已保留（未删除）：%s", res.From)
+	}
 
 	// ── 先加载设置（需要它里面的端口）──
 	settings, err := config.Load(config.Path())

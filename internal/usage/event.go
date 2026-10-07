@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"workbuddy.local/workbuddy-api/internal/datadir"
 	"workbuddy.local/workbuddy-api/internal/storage"
 )
 
@@ -334,14 +335,10 @@ func fileName(t time.Time) string {
 	return t.Format("2006-01-02") + ".jsonl"
 }
 
-// defaultDir 返回默认存储目录。
+// defaultDir 返回默认存储目录（`data/events`）。
+//
+// 🔴 2026-10-07 改：位置由 `internal/datadir` 统一决定
+// （exe 同目录下的 `data/events`，见该包注释）。
 func defaultDir() string {
-	if d := os.Getenv("WBAPI_DATA_DIR"); d != "" {
-		return filepath.Join(d, "events")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "events"
-	}
-	return filepath.Join(home, ".wbapi", "events")
+	return datadir.EventsDir()
 }
