@@ -359,18 +359,34 @@ func (st *trayState) removeIcon() {
 
 // loadTrayIcon 加载托盘图标。
 //
-// 🔴 当前是**占位图标**（系统默认信息图标）：
+// 🔴 优先用**内嵌的自定义图标**（assets/taoapi.ico，运行时创建 HICON），
+// 失败时**退化到系统默认图标**而不是让托盘挂不上 ——
+// 图标丑可以忍，没有托盘则用户无法退出/打开面板，功能就废了。
 //
-//	自定义 .ico 需要嵌进 exe 资源段（.syso），而那部分尚未完成
-//	（见 tools/genico；PNG 条目渲染问题还没解决）。
-//	接入后把这里换成 `LoadImage(hInst, MAKEINTRESOURCE(1), IMAGE_ICON, 0,0, LR_DEFAULTSIZE|LR_SHARED)`
-//	即可 —— 其余托盘逻辑不用动。
+// ⚠️ 为什么不用 `LoadImage(hInst, MAKEINTRESOURCE(1), …)`（编译期资源）：
+//
+//	那条路（`.syso` + RT_GROUP_ICON）实测**没走通** ——
+//	`FindResource` 能命中、重定位也回填正确，但 Windows 加载时报
+//	ERROR_BAD_EXE_FORMAT(193)。怀疑与 Go linker 对 `.rsrc` 节的处理有关，
+//	已花多轮未收敛。详见 tools/genico 与 trayicon_windows.go 的说明。
+//
+//	⇒ 运行时创建**完全绕开 PE 资源段**，行为确定可控。
 func loadTrayIcon() uintptr {
+	// ① 内嵌的自定义图标（首选）
+	//
+	//	取 16x16 作为基准：托盘标准尺寸。
+	//	高 DPI 下系统会在 NOTIFYICONDATA 里用这个 HICON 缩放，
+	//	16x16 是各版本 Windows 都稳妥的选择。
+	if h := iconFromICOData(trayIconData, trayIconSize); h != 0 {
+		return h
+	}
+
+	// ② 退化：系统信息图标
 	h, _, _ := procLoadIconW.Call(0, idcInfo)
 	if h != 0 {
 		return h
 	}
-	// 兜底：连系统信息图标都拿不到（极罕见），用应用程序图标
+	// ③ 最后兜底：应用程序图标
 	h, _, _ = procLoadIconW.Call(0, idcArrow)
 	return h
 }
