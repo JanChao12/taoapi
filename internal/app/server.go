@@ -247,6 +247,55 @@ func newMux(deps Deps) http.Handler {
 		handleChat(deps, w, r)
 	}))
 
+	// ── /v1/messages（Anthropic Messages）──
+	//
+	// 🔴 为什么加它（委托方 2026-10-09 需求）：让反代同时服务两类客户端 ——
+	//	DSH 的协议下拉框有 OpenAI Chat / OpenAI Responses / Anthropic Messages
+	//	三种，此前只有第一种能用。
+	//
+	// 🔴 委托方拍板的三条边界：
+	//   1. **只新增**本路由，/v1/chat/completions 完全不变
+	//   2. 鉴权**同时接受** x-api-key 与 Authorization: Bearer
+	//   3. 做不到的特性**明确报错**（不静默丢弃）
+	//
+	// ⚠️ 路径用 "/v1/messages" 前缀注册（不是精确匹配）：客户端会带
+	//	query string（实测 DSH 发 /v1/messages?beta=true）。ServeMux 的
+	//	精确模式会匹配带 query 的请求（query 不参与路径匹配），但
+	//	/v1/messages/count_tokens 需要单独一条 —— 见下。
+	mux.HandleFunc("/v1/messages", requireAPIKeyAny(deps, func(w http.ResponseWriter, r *http.Request) {
+		handleAnthropicMessages(deps, w, r)
+	}))
+
+	// ── /v1/messages/count_tokens ──
+	//
+	// 🔴 为什么必须实现（参考实现提醒，我原本漏了）：
+	//	Claude Code 等客户端用它做**上下文预算** —— 缺这个端点，
+	//	客户端会以为服务不支持而放弃或降级行为。
+	//
+	// ⚠️ Go 的 ServeMux 会优先匹配更长的模式，所以这条与上面的
+	//	"/v1/messages" 不冲突（更具体的胜出）。
+	mux.HandleFunc("/v1/messages/count_tokens", requireAPIKeyAny(deps,
+		func(w http.ResponseWriter, r *http.Request) {
+			handleAnthropicCountTokens(deps, w, r)
+		}))
+
+	// ── /v1/responses（OpenAI Responses API）──
+	//
+	// 🔴 为什么加它：DSH 的协议下拉框三种，这是第三种。
+	//	至此 OpenAI Chat / Anthropic Messages / OpenAI Responses 全部可用。
+	//
+	// 委托方三条边界与 anthropic 路径相同：
+	//  1. **只新增**本路由，/v1/chat/completions 完全不变
+	//  2. 鉴权同时接受 x-api-key 与 Authorization: Bearer
+	//  3. 做不到的特性明确报错（store / previous_response_id /
+	//     服务端工具 / 未知 item 类型 —— 见 protocol/responses 包注释）
+	//
+	// ⚠️ 与 /v1/chat/completions 的路径不冲突（不同字面量）。
+	mux.HandleFunc("/v1/responses", requireAPIKeyAny(deps,
+		func(w http.ResponseWriter, r *http.Request) {
+			handleResponses(deps, w, r)
+		}))
+
 	// ── 面板（静态资源，go:embed）──
 	mux.Handle("/panel/", panelHandler())
 

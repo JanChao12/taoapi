@@ -183,19 +183,25 @@ type wirePromotion struct {
 // 且实测证明 deepseek 系「不传 = 完全不思考」，所以服务端必须显式注入。
 const defaultReasoningEffort = "high"
 
-// effortAliases 把用户/客户端可能传来的档位名归一。
+// validUpstreamEfforts 是上游实测接受的档位白名单。
 //
-// 上游实测白名单：minimal / low / medium / high / xhigh / max / ultra / none
-// 被拒（400）：x-high / maximum / extreme / auto / highest / veryhigh
-var validUpstreamEfforts = map[string]bool{
-	"minimal": true,
-	"low":     true,
-	"medium":  true,
-	"high":    true,
-	"xhigh":   true,
-	"max":     true,
-	"ultra":   true,
-}
+// 🔴 2026-10-09 起改为**转发到 provider 层的唯一权威定义**。
+//
+//	起因：`off` 曾被本项目当作合法档位对外声明，而直连实测上游对它返回
+//	HTTP 400 code=11150。根因就是"哪些档位上游真的接受"这个事实存在
+//	多份副本（白名单在 models.go、翻译逻辑在 chat.go、新协议又各写一份），
+//	修一处漏一处。现在只有 provider.IsUpstreamEffort 一份。
+//
+// ⚠️ 保留这个变量名是为了不动 cleanEfforts 的调用点；它的内容
+//
+//	由 provider.UpstreamEfforts() 派生，不要在这里直接写字面量。
+var validUpstreamEfforts = func() map[string]bool {
+	m := make(map[string]bool)
+	for _, e := range provider.UpstreamEfforts() {
+		m[e] = true
+	}
+	return m
+}()
 
 // fetchV3Models 拉取国际版 /v3/config 的模型表。
 //

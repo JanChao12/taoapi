@@ -96,12 +96,40 @@ func (p *Provider) buildChatBody(req provider.ChatRequest) ([]byte, error) {
 	}
 
 	// 6) 思考档位：客户端指定就用，否则注入模型默认档
+	//
+	// 🔴 "off" 必须翻译成【不发这个字段】，不能原样透传（2026-10-09 实测）：
+	//
+	//	直连实测（模型 deepseek-v4.1-flash，经本服务打上游）：
+	//	  reasoning_effort:"off"   → HTTP 400 code=11150
+	//	                             "the reasoning effort value is not
+	//	                              supported by the current model"
+	//	  reasoning_effort:"none"  → HTTP 200，但**仍然产出思考**
+	//	  【不传该字段】            → HTTP 200，思考分片 0（fixture 铁证）
+	//
+	//	⇒ 上游根本没有"关闭思考"的档位取值：唯一能关掉思考的方式是**不传**。
+	//	  这也正是 DSH 侧的做法（它的配置写 `off: null`，即"留空什么都不发送"，
+	//	  见 DSH 官方文档 providers.zh.md 第 134 行）。
+	//
+	//	⚠️ 此前 `/v1/models` 把 "off" 作为合法档位对外声明，而这里会把
+	//	  "off" 原样发上去 ⇒ 任何客户端真的选「关闭思考」都会吃 400。
+	//	  DSH 没踩到只是因为它的 `off` 留空、根本不发这个值。
+	//
+	//	⚠️ 语义边界：对 ModeSwitch 模型（deepseek 系）不传 = 完全不思考，
+	//	  与用户意图一致。对 canDisableThinking=false 的模型（space-bunny）
+	//	  上游本就无法关闭思考，不传只是回到默认档 —— 这是能做到的最好结果，
+	//	  比发一个必然 400 的值诚实。
 	effort := req.ReasoningEffort
-	if effort == "" {
-		effort = p.defaultEffortFor(req.Model)
-	}
-	if effort != "" {
-		obj["reasoning_effort"] = effort
+	switch {
+	case provider.DisablesThinking(effort):
+		// 显式要求关闭思考：删掉字段（**不要**回落默认档，那与用户意图相反）
+		delete(obj, "reasoning_effort")
+	default:
+		if effort == "" {
+			effort = p.defaultEffortFor(req.Model)
+		}
+		if effort != "" {
+			obj["reasoning_effort"] = effort
+		}
 	}
 
 	out, err := json.Marshal(obj)

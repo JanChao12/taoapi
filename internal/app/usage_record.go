@@ -62,11 +62,31 @@ type usageRecorder struct {
 	start  time.Time
 
 	account string
+
+	// protocol 入站协议名（chat / responses / messages）。
+	//
+	// 🔴 为什么要记（2026-10-09 加 Anthropic 支持）：用量页按模型聚合，
+	//	而同一个模型可能被 OpenAI 客户端与 Anthropic 客户端分别调用。
+	//	不区分协议的话，排查"是不是某个协议的转换有问题"时无从下手 ——
+	//	usage.Event.Protocol 字段早就存在，只是此前恒为 "chat"。
+	protocol string
 }
 
-// newUsageRecorder 开始一次记账。
+// newUsageRecorder 开始一次记账（OpenAI Chat 协议）。
+//
+// 保留这个签名是为了不动已有的两条调用路径与测试；
+// 新协议用 newUsageRecorderFor 显式传协议名。
 func newUsageRecorder(deps Deps, clientModel, upstreamModel string,
 	stream bool, account, providerID string) *usageRecorder {
+	return newUsageRecorderFor(deps, clientModel, upstreamModel, stream, account, providerID, "chat")
+}
+
+// newUsageRecorderFor 开始一次记账（可指定协议名）。
+func newUsageRecorderFor(deps Deps, clientModel, upstreamModel string,
+	stream bool, account, providerID, protocol string) *usageRecorder {
+	if protocol == "" {
+		protocol = "chat"
+	}
 	return &usageRecorder{
 		deps:          deps,
 		requestID:     newResponseID(),
@@ -76,6 +96,7 @@ func newUsageRecorder(deps Deps, clientModel, upstreamModel string,
 		stream:        stream,
 		start:         time.Now(),
 		account:       account,
+		protocol:      protocol,
 	}
 }
 
@@ -145,7 +166,7 @@ func (r *usageRecorder) base() usagepkg.Event {
 		Time:       r.start,
 		Account:    r.account,
 		Model:      r.clientModel,
-		Protocol:   "chat",
+		Protocol:   r.protocol,
 		Stream:     r.stream,
 		DurationMS: time.Since(r.start).Milliseconds(),
 		RequestID:  r.requestID,

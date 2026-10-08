@@ -76,6 +76,37 @@ var ErrNoBrowser = errors.New("login: 未找到受支持的浏览器（需要 Ch
 // ErrLoginBusy 表示已有一个登录流程在进行。
 var ErrLoginBusy = errors.New("login: 已有登录流程在进行中")
 
+// ErrBrowserDisabledInTest 表示在测试二进制里拒绝真的启动浏览器。
+//
+// 见 StartBrowser 里的长注释：跑 app 包的测试会真的弹出 Chrome 窗口。
+// 这个错误让"测试里误触发浏览器"变成一次**明确失败**，
+// 而不是用户屏幕上莫名多出一个窗口。
+var ErrBrowserDisabledInTest = errors.New(
+	"login: 测试环境下不启动浏览器（需要真实浏览器请设 WBAPI_RUN_BROWSER_TESTS=1）")
+
+// isTestBinary 判断当前进程是不是 Go 的测试二进制。
+//
+// 判据与 autostart.IsTestBinary 一致（三条任一命中）：
+//   - 以 .test.exe 结尾（Go 测试二进制的固定命名）
+//   - 路径含 go-build 段（go 的临时构建目录）
+//   - 路径含 \Temp\ 段
+//
+// ⚠️ 刻意**不复用** autostart.IsTestBinary：那会让 login 包依赖 autostart
+// （autostart 是"开机自启"的领域概念，与浏览器无关）。
+// 这是 12 行纯函数，重复的代价小于引入一条跨领域依赖。
+func isTestBinary() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		// 拿不到自身路径时保守判为"非测试"：宁可让真实用户能用，
+		// 也不要在生产里误禁浏览器。
+		return false
+	}
+	lower := strings.ToLower(exe)
+	return strings.HasSuffix(lower, ".test.exe") ||
+		strings.Contains(lower, `\go-build`) || strings.Contains(lower, `/go-build`) ||
+		strings.Contains(lower, `\temp\`) || strings.Contains(lower, `/temp/`)
+}
+
 // BrowserKind 标识浏览器种类，用于诊断与日志（不含凭据）。
 type BrowserKind string
 
@@ -180,6 +211,34 @@ var manager struct {
 // 🔴 无论用哪种，都**必须**在结束时调用其中之一 —— 否则互斥位不会释放，
 // 下次登录会被 ErrLoginBusy 永久挡住。
 func StartBrowser(opts LoginOptions) (*BrowserSession, error) {
+	// 🔴 测试二进制下**绝不真的启动浏览器**（2026-10-09 我自己踩的坑）。
+	//
+	// ═══════════════════════════════════════════════════════════════
+	// 现象：跑 `go test ./internal/app/` 会**真的弹出 Chrome 窗口**，
+	//       连跑几轮就开了十几个，且它们不会自己关（profile 保留）。
+	// ═══════════════════════════════════════════════════════════════
+	//
+	// 根因：internal/app/api_login_test.go 的 TestLoginStartAcceptsKnownPlatforms
+	//       调的是**真实的 handleLoginStart**，而它的注释假设
+	//       「本机无浏览器 ⇒ 会返回 503」。但**本机装了 Chrome**，
+	//       于是 FindBrowser 通过 → runLogin → LoginFor → 这里 → 真开窗口。
+	//
+	//       login 包自己的浏览器测试有 WBAPI_RUN_BROWSER_TESTS=1 闸门，
+	//       **但 app 包这条没有** —— 跨包调用的测试漏掉了闸门。
+	//
+	// 🔴 为什么把闸门放在**这里**而不是只改那条测试：
+	//
+	//	这是**危险操作的发生点**。任何测试、任何将来新增的调用方，
+	//	只要走到这里就会受保护 —— 而不是指望每个测试作者都记得加闸门。
+	//	（与 autostart.IsTestBinary 同一个思路：第 56 轮正是因为
+	//	 自愈逻辑没在危险点设闸，把用户注册表改成了 app.test.exe。）
+	//
+	// ⚠️ 逃生舱：确实需要真实浏览器的测试走 WBAPI_RUN_BROWSER_TESTS=1
+	//	（与 login 包既有约定一致，不引入第二套开关）。
+	if isTestBinary() && os.Getenv("WBAPI_RUN_BROWSER_TESTS") != "1" {
+		return nil, ErrBrowserDisabledInTest
+	}
+
 	kind, exe, err := FindBrowser()
 	if err != nil {
 		return nil, err

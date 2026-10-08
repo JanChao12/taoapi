@@ -3,14 +3,12 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"workbuddy.local/workbuddy-api/internal/pool"
 	"workbuddy.local/workbuddy-api/internal/protocol/openai"
 	"workbuddy.local/workbuddy-api/internal/provider"
 	"workbuddy.local/workbuddy-api/internal/router"
@@ -46,15 +44,31 @@ func rewriteModel(body []byte, upstreamID string) ([]byte, error) {
 //   - 客户端要非流式 → 消费同一批事件，聚合后返回一个 JSON
 //
 // 之所以两条路都走上游流式：上游强制 stream:true。
+//
+// 🔴 协议可换（2026-10-09 加 Anthropic）：本函数只依赖
+// [chatCodec] 三个能力（事件转换 / 流式写出 / 错误写出），
+// 因此同一套换号、记账、限额逻辑可以同时服务两种协议。
 func handleChat(deps Deps, w http.ResponseWriter, r *http.Request) {
+	handleChatWith(deps, w, r, chatCodec{})
+}
+
+// handleChatWith 是 handleChat 的协议可换版本。
+func handleChatWith(deps Deps, w http.ResponseWriter, r *http.Request, codec chatCodec) {
+	// 🔴 必须归一化：零值 chatCodec{} 的四个函数字段都是 nil，
+	//	直接调用会 panic（实测：TestValidationNoProvider 在 Router==nil
+	//	分支上触发 nil 解引用，整个 httptest 服务崩掉）。
+	//	normalized() 把零值补齐为 OpenAI Chat 协议 —— 这也让
+	//	handleChat 传 chatCodec{} 是安全的。
+	codec = codec.normalized()
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		writeError(w, http.StatusMethodNotAllowed, openai.ErrTypeInvalidRequest,
+		codec.writeError(w, http.StatusMethodNotAllowed, openai.ErrTypeInvalidRequest,
 			"method_not_allowed", "只支持 POST")
 		return
 	}
 	if deps.Router == nil {
-		writeError(w, http.StatusServiceUnavailable, openai.ErrTypeServer,
+		codec.writeError(w, http.StatusServiceUnavailable, openai.ErrTypeServer,
 			"no_provider", "尚未配置任何渠道")
 		return
 	}
@@ -62,29 +76,31 @@ func handleChat(deps Deps, w http.ResponseWriter, r *http.Request) {
 	// 限制请求体大小
 	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBodyBytes+1))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
+		codec.writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
 			"read_body_failed", "读取请求体失败: "+err.Error())
 		return
 	}
 	if len(body) > MaxRequestBodyBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, openai.ErrTypeInvalidRequest,
+		codec.writeError(w, http.StatusRequestEntityTooLarge, openai.ErrTypeInvalidRequest,
 			"body_too_large", fmt.Sprintf("请求体超过上限 %d 字节", MaxRequestBodyBytes))
 		return
 	}
 
-	var req openai.ChatCompletionRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
-			"invalid_json", "请求体不是合法 JSON: "+err.Error())
+	// 协议差异点 1：请求体形状。OpenAI 走结构体解析（保留原有校验语义），
+	// Anthropic 走翻译（形状不同，必须真正转换）。
+	req, err := codec.decodeRequest(body)
+	if err != nil {
+		codec.writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
+			"invalid_json", err.Error())
 		return
 	}
-	if strings.TrimSpace(req.Model) == "" {
-		writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
+	if strings.TrimSpace(req.clientModel) == "" {
+		codec.writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
 			"missing_model", "缺少 model 字段")
 		return
 	}
-	if len(req.Messages) == 0 {
-		writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
+	if !req.hasMessages {
+		codec.writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
 			"missing_messages", "缺少 messages 字段")
 		return
 	}
@@ -97,9 +113,9 @@ func handleChat(deps Deps, w http.ResponseWriter, r *http.Request) {
 	//	请求**此刻**已经知道走了哪个渠道，必须当场记下。
 	//	事后再靠"当前注册表回推"会随平台增减而改写历史统计 ——
 	//	接入第二个平台后就再也无法可靠还原了。
-	resolvedProvider, upstreamID, _, err := deps.Router.Resolve(req.Model)
+	resolvedProvider, upstreamID, _, err := deps.Router.Resolve(req.clientModel)
 	if err != nil {
-		writeError(w, http.StatusNotFound, openai.ErrTypeInvalidRequest,
+		codec.writeError(w, http.StatusNotFound, openai.ErrTypeInvalidRequest,
 			"model_not_found", err.Error())
 		return
 	}
@@ -128,16 +144,15 @@ func handleChat(deps Deps, w http.ResponseWriter, r *http.Request) {
 	// tools 里我们不认识的字段都会在"解成 struct 再序列化"的往返中丢失或变形。
 	// 上游请求体只需要改 model 一个字段，其余原样透传最安全。
 	//
-	// ⚠️ 先把客户端原始模型名存下来再改写 req.Model。
+	// ⚠️ 先把客户端原始模型名存下来再改写。
 	// 曾直接传 req.Model 给下游函数，结果是【改写之后】的值 ——
 	// 导致两处错误（2026-10-05 由 TestUsageRecordedOnAggregatePath 抓到）：
 	//   1. 用量记录里 Model 变成上游 ID，用户对不上自己请求的名字；
 	//   2. 流式响应的 model 字段回给客户端的是上游 ID 而非用户请求的名字。
-	clientModel := req.Model
-	req.Model = upstreamID
-	raw, err := rewriteModel(body, upstreamID)
+	clientModel := req.clientModel
+	raw, err := rewriteModel(req.rawBody, upstreamID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
+		codec.writeError(w, http.StatusBadRequest, openai.ErrTypeInvalidRequest,
 			"invalid_json", "请求体不是合法 JSON: "+err.Error())
 		return
 	}
@@ -145,15 +160,15 @@ func handleChat(deps Deps, w http.ResponseWriter, r *http.Request) {
 	chatReq := provider.ChatRequest{
 		Model:           upstreamID,
 		RawBody:         raw,
-		Stream:          req.Stream,
-		ReasoningEffort: req.ReasoningEffort,
+		Stream:          req.stream,
+		ReasoningEffort: req.reasoningEffort,
 	}
 
-	if req.Stream {
-		streamChat(deps, ctx, w, r, chatReq, clientModel, providerID)
+	if req.stream {
+		streamChat(deps, ctx, w, r, chatReq, clientModel, providerID, codec)
 		return
 	}
-	aggregateChat(deps, ctx, w, r, chatReq, clientModel, providerID)
+	aggregateChat(deps, ctx, w, r, chatReq, clientModel, providerID, codec)
 }
 
 // streamChat 流式路径：把 canonical 事件转成 SSE 并立即 Flush。
@@ -165,11 +180,11 @@ func handleChat(deps Deps, w http.ResponseWriter, r *http.Request) {
 // 绝不能在调用上游【之前】就 WriteHeader —— 那样一旦上游报错，
 // 客户端已经收到 200，就无法再换号重试了（这正是重构前的缺陷）。
 func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.Request,
-	chatReq provider.ChatRequest, clientModel, providerID string) {
+	chatReq provider.ChatRequest, clientModel, providerID string, codec chatCodec) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, openai.ErrTypeServer,
+		codec.writeError(w, http.StatusInternalServerError, openai.ErrTypeServer,
 			"no_flusher", "服务器不支持流式响应")
 		return
 	}
@@ -178,13 +193,14 @@ func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.R
 	sess, err := TryChat(ctx, deps, deps.Chatter, chatReq)
 	if err != nil {
 		// 还没写任何东西 → 可以正常返回错误状态码，也可换号
-		writeUpstreamError(w, err)
+		writeUpstreamErrorWith(w, err, codec)
 		return
 	}
 	defer sess.Close()
 
 	// 记账器：在写出响应之前建好，确保后续每条分支都能记上账。
-	rec := newUsageRecorder(deps, clientModel, chatReq.Model, true, sess.AccountID(), providerID)
+	rec := newUsageRecorderFor(deps, clientModel, chatReq.Model, true,
+		sess.AccountID(), providerID, codec.protocol)
 
 	// ── 阶段二：确认上游可用，开始写响应 ──
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -193,52 +209,39 @@ func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.R
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	id := newResponseID()
-	created := time.Now().Unix()
-
-	writeEvent := func(ev provider.Event) error {
-		c := toOpenAIEvent(ev)
-		if c == nil {
-			return nil
-		}
-		// 记账：usage 只出现在流的最后一个事件，这里顺手收下。
-		// 放在协议转换之后，复用同一份转换结果，不重复解析。
-		if c.Type == openai.EvUsage {
-			sess.noteUsage(c.Usage)
-		}
-		b, err := openai.MarshalChunk(openai.BuildChunk(id, clientModel, created, *c))
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write(b); err != nil {
-			return err // 客户端断开
-		}
-		flusher.Flush()
-		return nil
+	// 协议差异点 2：流式编码器。OpenAI 每事件一帧；Anthropic 需要
+	// 开场的 message_start 与收尾的 message_delta/message_stop，
+	// 因此把"状态"交给编码器持有。
+	enc := codec.newEncoder(w, flusher, chatReq.Model, clientModel, sess)
+	if err := enc.start(); err != nil {
+		deps.logf("写入流首帧失败（客户端可能已断开）: %v", err)
+		rec.recordClientDisconnected()
+		return
 	}
 
 	// 首个事件已被 TryChat 从流里取出，必须先写它 ——
 	// 否则会丢掉第一个 token（通常是 role 帧）。
-	if err := writeEvent(sess.FirstEvent); err != nil {
+	if err := enc.write(sess.FirstEvent); err != nil {
 		deps.logf("写入首个事件失败（客户端可能已断开）: %v", err)
 		rec.recordClientDisconnected()
 		return
 	}
 
 	// ── 阶段三：消费剩余事件（此时已无法换号）──
-	streamErr := sess.Rest(writeEvent)
+	streamErr := sess.Rest(enc.write)
 	if streamErr != nil {
-		// 流已经开始，改不了状态码；用一条错误帧告知客户端
-		_, _ = w.Write(mustMarshal(map[string]any{
-			"error": map[string]any{
-				"message": streamErr.Error(),
-				"type":    openai.ErrTypeUpstream,
-			},
-		}))
+		// 流已经开始，改不了状态码；用协议自己的错误帧告知客户端。
+		//
+		// 🔴 Anthropic 路径下这里【绝不能】补 message_stop ——
+		//	那等同"正常结束"，客户端会把半截回答当完整回答继续跑。
+		//	Anthropic 的 Fail 只发 error 事件（见 anthropic.StreamWriter.Fail）。
+		if err := enc.fail(streamErr); err != nil {
+			deps.logf("写入流错误帧失败: %v", err)
+		}
 		deps.logf("对话流中断: %v", streamErr)
+	} else if err := enc.finish(); err != nil {
+		deps.logf("写入流收尾帧失败: %v", err)
 	}
-	_, _ = w.Write(openai.DoneMarker)
-	flusher.Flush()
 
 	// ── 记账（在流结束之后，不影响首字节）──
 	//
@@ -262,33 +265,30 @@ func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.R
 //
 // 非流式天然容易换号 —— 反正要收齐全部事件才写出。
 func aggregateChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.Request,
-	chatReq provider.ChatRequest, clientModel, providerID string) {
+	chatReq provider.ChatRequest, clientModel, providerID string, codec chatCodec) {
 
 	sess, err := TryChat(ctx, deps, deps.Chatter, chatReq)
 	if err != nil {
-		writeUpstreamError(w, err)
+		writeUpstreamErrorWith(w, err, codec)
 		return
 	}
 	defer sess.Close()
 
-	rec := newUsageRecorder(deps, clientModel, chatReq.Model, false, sess.AccountID(), providerID)
+	rec := newUsageRecorderFor(deps, clientModel, chatReq.Model, false,
+		sess.AccountID(), providerID, codec.protocol)
 
-	id := newResponseID()
-	created := time.Now().Unix()
-	agg := openai.NewAggregator(id, clientModel, created)
+	// 协议差异点 3：非流式聚合器。两者都要自己聚合（上游强制流式），
+	// 但产出形状不同（OpenAI choices / Anthropic content blocks）。
+	agg := codec.newAggregator(chatReq.Model, clientModel)
 
 	// 首个事件（被 TryChat 取出的那个）也要喂给聚合器，否则会少 content
-	if c := toOpenAIEvent(sess.FirstEvent); c != nil {
-		agg.Add(*c)
-	}
+	agg.add(sess.FirstEvent)
 
 	if err := sess.Rest(func(ev provider.Event) error {
-		if c := toOpenAIEvent(ev); c != nil {
-			agg.Add(*c)
-		}
+		agg.add(ev)
 		return nil
 	}); err != nil {
-		writeUpstreamError(w, err)
+		writeUpstreamErrorWith(w, err, codec)
 		// 非流式：此时还没写任何响应体，可以正常返回错误状态码。
 		// 记账仍然要写 —— 失败的请求也该在用量页留痕。
 		if isClientDisconnect(err) {
@@ -300,9 +300,9 @@ func aggregateChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *htt
 	}
 
 	// 聚合器内部持有 usage；用它记账（可能为 nil = 上游没给）
-	rec.recordOK(agg.Usage())
+	rec.recordOK(agg.usage())
 
-	writeJSON(w, http.StatusOK, agg.Result())
+	writeJSON(w, http.StatusOK, agg.result())
 }
 
 // toOpenAIEvent 把 provider 事件转成协议层事件。
@@ -344,37 +344,10 @@ func toOpenAIEvent(ev provider.Event) *openai.Event {
 	return nil
 }
 
-// writeUpstreamError 把上游错误映射为合理的 HTTP 状态码。
-func writeUpstreamError(w http.ResponseWriter, err error) {
-	status := http.StatusBadGateway
-	errType := openai.ErrTypeUpstream
-	code := "upstream_error"
-
-	// 没有可用账号是【本服务】的状态，不是上游的错 —— 503 更准确
-	if errors.Is(err, pool.ErrNoAvailable) || strings.Contains(err.Error(), "没有可用账号") {
-		writeError(w, http.StatusServiceUnavailable, openai.ErrTypeServer,
-			"no_available_account", "没有可用账号（全部禁用/冷却/无额度）")
-		return
-	}
-
-	// provider 层用接口暴露错误分类，避免 app 依赖具体渠道包
-	var cls interface {
-		IsAuthFailure() bool
-		IsRateLimited() bool
-	}
-	if errors.As(err, &cls) {
-		switch {
-		case cls.IsAuthFailure():
-			status, errType, code = http.StatusUnauthorized, openai.ErrTypeAuth, "auth_failed"
-		case cls.IsRateLimited():
-			status, errType, code = http.StatusTooManyRequests, openai.ErrTypeRateLimit, "rate_limited"
-		}
-	}
-	if errors.Is(err, provider.ErrUnsupportedReasoning) {
-		status, errType, code = http.StatusBadRequest, openai.ErrTypeInvalidRequest, "unsupported_reasoning_effort"
-	}
-	writeError(w, status, errType, code, err.Error())
-}
+// 🔴 writeUpstreamError 已迁到 protocol_codec.go 的 writeUpstreamErrorWith ——
+//	那里按协议选择错误序列化形状。此处**不要**再留一份实现：
+//	两份必然漂移，而错误分类（"没有可用账号 → 503"、"403 不判封号"等）
+//	是踩过坑才定下的，必须只有一个权威版本。
 
 // mustMarshal 序列化，失败时返回一个固定错误串。
 func mustMarshal(v any) []byte {

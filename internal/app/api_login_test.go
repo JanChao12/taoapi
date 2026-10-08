@@ -237,6 +237,19 @@ func TestLoginStartAcceptsKnownPlatforms(t *testing.T) {
 
 			// 要么 202（已受理），要么 503（本机无浏览器）——
 			// 两者都说明平台校验**通过了**（没走到 400 分支）。
+			//
+			// 🔴 本测试**不会真的弹出浏览器**（2026-10-09 修正）：
+			//
+			//	它调的是真实的 handleLoginStart，而本机装了 Chrome ⇒
+			//	FindBrowser 会通过 ⇒ runLogin → login.LoginFor → StartBrowser。
+			//	改造前那一步**真的开了 Chrome 窗口**，连跑几轮开了十几个
+			//	（用户实测发现）。
+			//
+			//	现在 login.StartBrowser 在测试二进制里直接返回
+			//	ErrBrowserDisabledInTest（见该函数的长注释），
+			//	所以这里只会拿到 202 + 后台流程立即失败 —— 断言依然成立。
+			//
+			//	⇒ 本测试**不依赖**"本机有没有浏览器"，在两种机器上行为一致。
 			if rec.Code == http.StatusBadRequest {
 				t.Errorf("platform=%q 被误拒为 400: %s", tc.in, rec.Body.String())
 			}

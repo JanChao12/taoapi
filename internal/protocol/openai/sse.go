@@ -63,6 +63,25 @@ func BuildChunk(id, model string, created int64, ev Event) *ChatCompletionChunk 
 }
 
 // toOpenAIUsage 转换用量。
+//
+// 🔴 缓存字段必须映射（2026-10-09 补）。
+//
+//	缺口：上游 SSE 里**确实有** prompt_cache_hit_tokens /
+//	prompt_cache_miss_tokens（fixture 实测 149/12），provider 也解析进了
+//	canonical Usage、openai.EventUsage 也带着它们 —— 但**这里没往下传**，
+//	于是对外流式 usage 帧里没有这两个字段。
+//
+//	⚠️ 与 2026-10-06 修的那次是**两条不同的链路**，别混淆：
+//	  · 面板的缓存命中率  → 走记账（usage_record.go），那条路已修好
+//	  · 客户端自己读缓存  → 走这里（对外 SSE），此前一直是缺的
+//
+//	⇒ 本次只影响"客户端从流里读缓存命中"的用法，面板行为不变。
+//
+//	为什么这是**纯增量、不可能破坏既有客户端**的改动：
+//	  两个字段都是 `omitempty`（见 types.go）⇒
+//	  上游没报告缓存时值为 0 → 字段**完全不出现**，输出与改动前逐字节相同；
+//	  上游报告了缓存时才多出这两个字段，而 OpenAI 兼容客户端对未知字段
+//	  一律忽略。所以"今天能跑的客户端，改完照样能跑"。
 func toOpenAIUsage(u *EventUsage) *Usage {
 	if u == nil {
 		return nil
@@ -73,6 +92,9 @@ func toOpenAIUsage(u *EventUsage) *Usage {
 		TotalTokens:              u.TotalTokens,
 		CompletionThinkingTokens: u.ReasoningTokens,
 		Credit:                   u.Credit,
+		// 缓存命中/未命中（omitempty：为 0 时不输出，故为纯增量）
+		PromptCacheHitTokens:  u.PromptCacheHitTokens,
+		PromptCacheMissTokens: u.PromptCacheMissTokens,
 	}
 	if u.ReasoningTokens != 0 {
 		out.CompletionTokensDetails = &TokenDetails{ReasoningTokens: u.ReasoningTokens}
