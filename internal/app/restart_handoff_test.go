@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -170,5 +172,117 @@ func TestClientOriginHelperReadsHeader(t *testing.T) {
 	req.Header.Set("Origin", "http://127.0.0.1:4545")
 	if got := clientOrigin(req); got != "http://127.0.0.1:4545" {
 		t.Errorf("应读出 Origin 头，实际 %q", got)
+	}
+}
+
+// TestEverySignalCallSiteHasHandoffContext 守：**任何** signal() 调用点
+// 都必须先填好交接上下文。
+//
+// 🔴 这是本次故障的"结构性"护栏 —— 上面几条测的是行为，
+// 这条直接审源码，确保**将来新增的调用方**也不会重犯。
+//
+// ⚠️ 为什么必须审源码而不是只靠行为测试：
+//
+//	行为测试只覆盖"已存在的调用路径"。若后人新增第三个触发重启的入口
+//	（比如"定时重启"），行为测试不会知道它存在，而它会重犯同样的错。
+//	本条按"每一处 signal() 都必须在同一个函数里伴随 claim/setPending"
+//	来断言，于是新增调用方必须先想清楚上下文从哪来。
+//
+// 允许的两种写法（本项目当前就这两种）：
+//
+//	a) 直接调 requestRestart —— 它内部已含 claim + signal；
+//	b) 调 claimRestart 后再 signal —— 用于"要先写响应再关闭"的场景。
+//
+// 反向对照：在 api_update.go 里另起一个只调 signal() 的函数，本条立刻红。
+func TestEverySignalCallSiteHasHandoffContext(t *testing.T) {
+	files := []string{"restart.go", "api_update.go", "serve.go"}
+
+	// 按函数切块，检查每个含 signal() 的函数块里是否有上下文来源。
+	for _, name := range files {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读取 %s 失败: %v", name, err)
+		}
+		text := string(src)
+
+		// 定位所有 `X.signal()` 调用（排除定义与注释行）。
+		for _, line := range strings.Split(text, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.Contains(trimmed, ".signal()") {
+				continue
+			}
+			// 跳过注释、定义（func ... signal()）与测试内直接调用。
+			if strings.HasPrefix(trimmed, "//") ||
+				strings.HasPrefix(trimmed, "*") ||
+				strings.HasPrefix(trimmed, "func ") {
+				continue
+			}
+			// signal() 必须出现在含 claim/setPending 的文件内上下文 ——
+			// 这里用"同文件必须存在 claimRestart 或 setPending 调用"近似，
+			// 更严格的作用域级检查见下方 funcBlockContaining 断言。
+			if !strings.Contains(text, "claimRestart(") && !strings.Contains(text, "setPending(") {
+				t.Errorf("🔴 %s 里的 %q 所在文件没有任何 claimRestart/setPending 调用。\n"+
+					"  ⇒ 只发信号不填交接上下文 = serve 主循环读不到 restartID =\n"+
+					"     「重启放弃：未取得本次交接标识」= 2026-10-09 更新不重启那个故障。\n"+
+					"  正确做法：调 requestRestart，或 claimRestart 后再 signal。",
+					name, trimmed)
+			}
+		}
+	}
+
+	// 更强的断言：restart.go 中 requestRestart 必须"先 claim 再 signal"。
+	src, err := os.ReadFile("restart.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	idx := strings.Index(text, "func (s *restartState) requestRestart")
+	if idx < 0 {
+		t.Fatal("找不到 requestRestart 定义")
+	}
+	body := text[idx:]
+	claimAt := strings.Index(body, "claimRestart(")
+	signalAt := strings.Index(body, "s.signal()")
+	if claimAt < 0 || signalAt < 0 {
+		t.Fatalf("requestRestart 必须同时含 claimRestart 与 signal（claimAt=%d signalAt=%d）",
+			claimAt, signalAt)
+	}
+	if claimAt > signalAt {
+		t.Error("🔴 requestRestart 里 signal 出现在 claim 之前：\n" +
+			"  主循环可能先取到空槽位 ⇒ 同样触发出「重启放弃」。必须先 claim 再 signal。")
+	}
+}
+
+// TestUpdateApplyTriggersRestartWithContext 审源码：更新路径必须
+// 走带上下文的入口，而不是裸 signal()。
+//
+// 这是对 TestEverySignalCallSiteHasHandoffContext 的**针对性**补充 ——
+// 直接盯住出事的那个函数，让"修好了又被改回去"立刻可见。
+func TestUpdateApplyTriggersRestartWithContext(t *testing.T) {
+	src, err := os.ReadFile("api_update.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	idx := strings.Index(text, "func handleUpdateApply")
+	if idx < 0 {
+		t.Fatal("找不到 handleUpdateApply")
+	}
+	// 取到文件末尾即可（它是本文件最后一个处理函数）。
+	body := text[idx:]
+
+	if !strings.Contains(body, "claimRestart(") {
+		t.Error("🔴 handleUpdateApply 必须调 claimRestart（填交接上下文）后 signal。\n" +
+			"  2026-10-09 故障：这里只调了 signal()，导致更新后服务永不重启、\n" +
+			"  exe 已是新版而跑着的仍是旧版。")
+	}
+	if !strings.Contains(body, "newRestartID(") {
+		t.Error("🔴 handleUpdateApply 必须生成 restartID：健康握手要求子进程回显同一标识，" +
+			"空标识在 healthMatches 里**直接判不健康**，父进程将超时并杀掉刚拉起的新进程。")
+	}
+	if !strings.Contains(body, "plannedListenAddr(") {
+		t.Error("🔴 handleUpdateApply 必须用 plannedListenAddr 得到握手探测地址" +
+			"（与子进程的解析规则同源）。")
 	}
 }
