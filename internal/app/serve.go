@@ -30,7 +30,6 @@ import (
 	"workbuddy.local/workbuddy-api/internal/provider"
 	"workbuddy.local/workbuddy-api/internal/provider/workbuddy"
 	"workbuddy.local/workbuddy-api/internal/router"
-	"workbuddy.local/workbuddy-api/internal/update"
 	usagepkg "workbuddy.local/workbuddy-api/internal/usage"
 )
 
@@ -258,20 +257,6 @@ func runServeMode(args []string, rt *guiRuntime) int {
 	// 状态机保证同一时刻只有一次重启在进行（重复点击返回 409）。
 	restartSt := newRestartState()
 	deps.restart = restartSt
-
-	// ── 自动更新（面板「检查更新」）──
-	//
-	// 🔴 只在**真实运行**时装配，测试环境故意留 nil（接口返回 503）。
-	//
-	//	原因：update.apply 会**替换正在运行的 exe 并触发重启**。
-	//	若测试环境也能走到这条路，`go test` 就可能把开发机上的
-	//	taoapi.exe 换掉 —— 与之前"自愈被测试触发、把注册表改成
-	//	测试二进制路径"是同一类事故（那次实测踩到了）。
-	//	判据用 useGUIForNoArgs()（= WBAPI_NO_GUI 未设），与既有约定一致。
-	if useGUIForNoArgs() {
-		deps.Update = newUpdateState()
-		deps.Updater = update.NewUpdater()
-	}
 
 	// 本次交接标识：只有在"被父进程以 --restart-id 拉起"时才非空。
 	//

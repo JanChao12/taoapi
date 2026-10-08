@@ -15,7 +15,6 @@ import (
 	"workbuddy.local/workbuddy-api/internal/provider"
 	"workbuddy.local/workbuddy-api/internal/provider/workbuddy"
 	"workbuddy.local/workbuddy-api/internal/router"
-	"workbuddy.local/workbuddy-api/internal/update"
 	usagepkg "workbuddy.local/workbuddy-api/internal/usage"
 )
 
@@ -59,16 +58,6 @@ type Deps struct {
 	// 只用于判断"配置里的端口是否需要重启才生效"，不参与监听本身。
 	// 为 0 表示未知（测试环境），此时不提示重启。
 	ListenPort int
-
-	// Update 自动更新的状态机；为 nil 时更新接口返回 503。
-	//
-	// 🔴 只允许在真实运行（runServeMode）里装配。测试环境下
-	//	绝不能启用 —— 否则测试可能触发"替换正在运行的 exe"。
-	Update *updateState
-
-	// Updater 更新源客户端；为 nil 时用生产默认（GitHub 官方 API）。
-	// 测试注入假服务器。
-	Updater *update.Updater
 
 	// applyAutoCheckin 在自动签到开关变化时被调用，使其立即生效。
 	//
@@ -300,26 +289,6 @@ func newMux(deps Deps) http.Handler {
 	mux.HandleFunc("/api/settings/restart", guardManagementAPI(deps,
 		func(w http.ResponseWriter, r *http.Request) {
 			handleRestart(deps, w, r)
-		}))
-
-	// ── 自动更新 ──
-	//
-	// GET  /api/update       读状态（只读 ⇒ 不套 CSRF，参照 /status 的取舍）
-	// POST /api/update/check 去 GitHub 查最新版（有副作用 ⇒ 套 CSRF）
-	// POST /api/update/apply 下载+校验+**替换正在运行的 exe**（⇒ 必须套 CSRF）
-	//
-	// 🔴 apply 是本项目最危险的接口：一旦被 CSRF 触发，恶意网页就能
-	//	在你的机器上替换并重启程序。所以它**必须**走 guardManagementAPI。
-	mux.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
-		handleUpdateStatus(deps, w, r)
-	})
-	mux.HandleFunc("/api/update/check", guardManagementAPI(deps,
-		func(w http.ResponseWriter, r *http.Request) {
-			handleUpdateCheck(deps, w, r)
-		}))
-	mux.HandleFunc("/api/update/apply", guardManagementAPI(deps,
-		func(w http.ResponseWriter, r *http.Request) {
-			handleUpdateApply(deps, w, r)
 		}))
 
 	// ── 面板写操作令牌（CSRF 主防线，见 csrf.go）──
