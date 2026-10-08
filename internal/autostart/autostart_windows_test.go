@@ -557,6 +557,184 @@ func TestRegistryTestsDoNotTouchOtherValues(t *testing.T) {
 	others.assertUnchanged(t)
 }
 
+// TestHealRewritesStalePath 是自愈的**端到端**测试（真实读写注册表）。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 2026-10-08 委托人提问："如果我 taoapi 的文件地址换了，
+// 那是不是之后的开机自启又会失效了"
+// ═══════════════════════════════════════════════════════════════════
+//
+//	复现路径（本测试就按它写）：
+//	  1. 用"旧路径"注册自启（模拟 exe 当时在别处）
+//	  2. exe 被搬到新位置
+//	  3. 手动运行一次 → Heal 应当用**当前**路径重写注册表
+//
+//	⚠️ 关键的**反向断言**在最后两步：Heal **不得**替用户打开自启。
+//	  这是自愈最危险的失败方向 —— 比"没修好"更糟，
+//	  因为它违背用户关掉自启的明确意图。
+func TestHealRewritesStalePath(t *testing.T) {
+	setupRegistryTest(t)
+
+	// ⚠️ 必须用一个**生产形态**的路径，不能用 testExePath()。
+	//
+	//	原因是本文件新增的 TestHealRefusesTestBinary 那道闸：
+	//	Heal 对测试二进制（...\Temp\go-build...\pkg.test.exe）**一律拒绝改写**。
+	//	若这里仍用测试二进制路径，这条测试就自相矛盾了
+	//	（它期望"重写"，而闸的语义是"不许重写"）。
+	//
+	//	写法是安全的：注册表写一个路径字符串**不要求文件存在**
+	//	（validateExePath 只查非空、不含双引号），
+	//	且 setupRegistryTest 的 cleanup 会把注册表恢复成测试前的快照。
+	const exe = `D:\tools\TAOAPI\taoapi.exe`
+
+	// 前置断言：这个路径必须是"生产形态"，否则本测试又变成空转。
+	if IsTestBinary(exe) {
+		t.Fatalf("前置条件不成立：%q 不该被判为测试二进制", exe)
+	}
+
+	// ── 场景 1：未启用 ⇒ 必须什么都不做，且**不得**打开自启 ──
+	if err := Disable(); err != nil {
+		t.Fatalf("预清理 Disable 失败: %v", err)
+	}
+	outcome, err := Heal(exe)
+	if err != nil {
+		t.Fatalf("Heal（未启用）报错: %v", err)
+	}
+	if outcome != HealNotEnabled {
+		t.Errorf("未启用时 outcome = %v，期望 %v", outcome, HealNotEnabled)
+	}
+	if on, _ := Enabled(); on {
+		t.Fatal("🔴 Heal 在'未启用'时把自启打开了 —— 这是越权，" +
+			"用户关掉自启是明确意图")
+	}
+
+	// ── 场景 2：路径已过期 ⇒ 必须重写成当前路径 ──
+	staleExe := `C:\definitely\not\here\wbapi.exe`
+	if err := Enable(staleExe, DefaultArgs); err != nil {
+		t.Fatalf("写入过期路径失败: %v", err)
+	}
+	before, err := CommandLineFromRegistry()
+	if err != nil {
+		t.Fatalf("读回失败: %v", err)
+	}
+	if !strings.Contains(before, staleExe) {
+		t.Fatalf("前置条件不成立：注册表里应当是过期路径，实际 %q", before)
+	}
+
+	outcome, err = Heal(exe)
+	if err != nil {
+		t.Fatalf("Heal（过期路径）报错: %v", err)
+	}
+	if outcome != HealRewritten {
+		t.Errorf("过期路径时 outcome = %v，期望 %v", outcome, HealRewritten)
+	}
+
+	after, err := CommandLineFromRegistry()
+	if err != nil {
+		t.Fatalf("重写后读回失败: %v", err)
+	}
+	got := ParseExePath(after)
+	if !SameExePath(got, exe) {
+		t.Errorf("重写后的路径 = %q，期望 %q", got, exe)
+	}
+	if strings.Contains(after, staleExe) {
+		t.Errorf("重写后仍含过期路径: %q", after)
+	}
+	// 重写必须带上标准参数（--silent 不能丢，否则回到"日志静默丢失"的老缺陷）
+	if !strings.Contains(after, FlagSilent) {
+		t.Errorf("重写后的命令行丢了 %s: %q —— "+
+			"会导致自启进程不挂托盘且日志静默丢失", FlagSilent, after)
+	}
+
+	// ── 场景 3：路径已一致 ⇒ 不动（幂等） ──
+	outcome, err = Heal(exe)
+	if err != nil {
+		t.Fatalf("Heal（已一致）报错: %v", err)
+	}
+	if outcome != HealUnchanged {
+		t.Errorf("路径已一致时 outcome = %v，期望 %v（应当幂等）", outcome, HealUnchanged)
+	}
+
+	// ── 场景 4：畸形值 ⇒ 不猜、不动，也不报错 ──
+	key, err := openRunKey(keySetValue)
+	if err != nil {
+		t.Fatalf("打开键失败: %v", err)
+	}
+	if err := setStringValue(key, ValueName, `"C:\unterminated\path.exe serve`); err != nil {
+		closeKey(key)
+		t.Fatalf("写入畸形值失败: %v", err)
+	}
+	closeKey(key)
+
+	outcome, err = Heal(exe)
+	if err != nil {
+		t.Fatalf("Heal（畸形值）不应报错，实际: %v", err)
+	}
+	if outcome != HealUnchanged {
+		t.Errorf("畸形值 outcome = %v，期望 %v（解析不出就不猜）", outcome, HealUnchanged)
+	}
+	malformed, _ := CommandLineFromRegistry()
+	if !strings.Contains(malformed, "unterminated") {
+		t.Errorf("畸形值被程序擅自改写了: %q —— 不该猜", malformed)
+	}
+}
+
+// TestHealIsUnsupportedOnOtherPlatforms 见 autostart_other_test.go
+// （非 Windows 平台必须返回 ErrUnsupported，不能静默成功）。
+
+// TestHealRefusesTestBinary 是"自愈不得碰测试环境"的**端到端**守卫。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 这条守的是我自己踩的坑（2026-10-08，实测污染了委托人真实注册表）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	加了自愈后跑 `go test ./internal/app/`，真实发生了：
+//	  注册表 [wbapi] 从 "D:\tools\TAOAPI\taoapi.exe" serve --silent
+//	  被改写成 ...\Temp\go-build...\app.test.exe serve --silent。
+//
+//	本测试用**测试二进制自己的路径**（testExePath 返回的就是 .test.exe）
+//	去调用 Heal，断言注册表**必须原封不动**。
+//
+//	⚠️ 这条比"能修好"更重要：原缺陷是"该修没修"（功能缺失），
+//	  这个是"主动改坏用户的注册表"（破坏数据）。方向相反，破坏力更大。
+func TestHealRefusesTestBinary(t *testing.T) {
+	setupRegistryTest(t)
+	exe := testExePath(t)
+
+	// 前置断言：测试二进制路径确实会被判为测试二进制
+	// （否则本测试是空转，等于没有护栏）。
+	if !IsTestBinary(exe) {
+		t.Fatalf("前置条件不成立：测试二进制路径 %q 应被判为测试二进制", exe)
+	}
+
+	// 先写入一个"过期路径"，制造"看起来需要自愈"的局面。
+	staleExe := `C:\definitely\not\here\wbapi.exe`
+	if err := Enable(staleExe, DefaultArgs); err != nil {
+		t.Fatalf("写入过期路径失败: %v", err)
+	}
+	before, _ := CommandLineFromRegistry()
+
+	// 用测试二进制路径调 Heal —— 它**必须拒绝**改写。
+	outcome, err := Heal(exe)
+	if err != nil {
+		t.Fatalf("Heal 不应报错（测试环境是正常状态）: %v", err)
+	}
+	if outcome != HealUnchanged {
+		t.Errorf("测试二进制调用 Heal 的 outcome = %v，期望 %v（必须拒绝）",
+			outcome, HealUnchanged)
+	}
+
+	after, _ := CommandLineFromRegistry()
+	if after != before {
+		t.Errorf("🔴 注册表被测试二进制改写了！\n  改前: %q\n  改后: %q\n"+
+			"这会让用户的开机自启指向一个测试结束即消失的临时文件，"+
+			"且 Run 键失效是静默的", before, after)
+	}
+	if strings.Contains(after, ".test.exe") {
+		t.Errorf("🔴 注册表里出现了测试二进制路径: %q", after)
+	}
+}
+
 // TestValueNameIsStable 守护值名常量。
 //
 // 值名就是本程序在开机自启列表里的身份：一旦改动，

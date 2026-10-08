@@ -24,11 +24,13 @@ import (
 	"time"
 
 	"workbuddy.local/workbuddy-api/internal/auth"
+	"workbuddy.local/workbuddy-api/internal/autostart"
 	"workbuddy.local/workbuddy-api/internal/config"
 	"workbuddy.local/workbuddy-api/internal/datadir"
 	"workbuddy.local/workbuddy-api/internal/provider"
 	"workbuddy.local/workbuddy-api/internal/provider/workbuddy"
 	"workbuddy.local/workbuddy-api/internal/router"
+	"workbuddy.local/workbuddy-api/internal/update"
 	usagepkg "workbuddy.local/workbuddy-api/internal/usage"
 )
 
@@ -188,6 +190,35 @@ func runServeMode(args []string, rt *guiRuntime) int {
 		logger.Printf("  旧目录已保留（未删除）：%s", res.From)
 	}
 
+	// ── 开机自启自愈：exe 被移动/改名后修正注册表里的过期路径 ──
+	//
+	// 🔴 为什么需要（2026-10-08 委托人提问："文件夹地址换了，自启是不是又失效"）：
+	//
+	//	Run 键里是**写入那一刻的绝对路径快照**，不是跟着 exe 走的引用。
+	//	移动/改名文件夹（甚至只改 exe 文件名）后，自启**静默失效** ——
+	//	不弹框、不写日志；而面板的 Enabled() 只查"值是否存在"，
+	//	仍显示"已开启" ⇒ **界面在骗用户**。
+	//
+	//	自愈只在"已启用"时才重写（HealNotEnabled 分支什么都不做）——
+	//	绝不能因为"发现没注册"就替用户打开自启，那是越权。
+	//
+	//	⚠️ 它必须靠**手动运行一次**触发：自启已经失效，程序不会自己起来。
+	//	  解决的是"你手动打开一次，以后就自动好了"。
+	//
+	// 失败不阻止启动：这只是锦上添花，注册表权限异常不该让服务起不来。
+	if exe, err := os.Executable(); err == nil {
+		switch outcome, herr := autostart.Heal(exe); {
+		case herr != nil:
+			logger.Printf("⚠️ 开机自启自愈检查失败（不影响服务）: %v", herr)
+		case outcome == autostart.HealRewritten:
+			logger.Printf("已修正开机自启路径（exe 位置变了）→ %s", exe)
+		default:
+			// HealNotEnabled / HealUnchanged：都是"不该动"，
+			// 但记一行便于排查（用户报告"自启不生效"时能立刻看到结论）。
+			logger.Printf("开机自启检查：%s", outcome)
+		}
+	}
+
 	// ── 先加载设置（需要它里面的端口）──
 	settings, err := config.Load(config.Path())
 	if err != nil {
@@ -227,6 +258,20 @@ func runServeMode(args []string, rt *guiRuntime) int {
 	// 状态机保证同一时刻只有一次重启在进行（重复点击返回 409）。
 	restartSt := newRestartState()
 	deps.restart = restartSt
+
+	// ── 自动更新（面板「检查更新」）──
+	//
+	// 🔴 只在**真实运行**时装配，测试环境故意留 nil（接口返回 503）。
+	//
+	//	原因：update.apply 会**替换正在运行的 exe 并触发重启**。
+	//	若测试环境也能走到这条路，`go test` 就可能把开发机上的
+	//	taoapi.exe 换掉 —— 与之前"自愈被测试触发、把注册表改成
+	//	测试二进制路径"是同一类事故（那次实测踩到了）。
+	//	判据用 useGUIForNoArgs()（= WBAPI_NO_GUI 未设），与既有约定一致。
+	if useGUIForNoArgs() {
+		deps.Update = newUpdateState()
+		deps.Updater = update.NewUpdater()
+	}
 
 	// 本次交接标识：只有在"被父进程以 --restart-id 拉起"时才非空。
 	//

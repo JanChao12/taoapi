@@ -74,7 +74,14 @@ const healthServiceName = ProductName
 // 用 JSON 而不是纯文本 "ok"，因为面板需要判断**四个条件**才能导航：
 // 仅凭 HTTP 200 无法区分"我们已就绪"与"某个无关服务恰好返回 200"。
 type healthResponse struct {
-	// Service 固定为 "wbapi"，用于识别对面是不是我们的服务。
+	// Service 是服务标识（= ProductName，当前为 "TAOAPI"），
+	// 用于识别对面是不是我们的服务。
+	//
+	// 🔴 前端 settings.js 的 pollRestart 会把这个值**逐字比对**，
+	//	两边不一致会让"重启后自动重连"永远失败（2026-10-07 实测过：
+	//	改名 wbapi → TAOAPI 时只改了后端，前端仍写死 'wbapi'，
+	//	结果重启明明成功、面板却报"未连接"）。
+	//	护栏：`TestPanelServiceNameMatchesBackend`。
 	Service string `json:"service"`
 
 	// Ready 表示服务已可接受业务请求。

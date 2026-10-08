@@ -208,8 +208,8 @@ Write-Item "残留临时 profile" "$($leftover.Count) 个" $(if ($leftover.Count
 $strayChrome = Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -gt (Get-Date).AddMinutes(-30) }
 Write-Item "残留浏览器进程" "$($strayChrome.Count) 个" $(if ($strayChrome.Count -eq 0) { "Green" } else { "Yellow" })
 
-# 账号数（用安全方式：wbapi.exe status）
-$wbapi = Join-Path $root "wbapi.exe"
+# 账号数（用安全方式：taoapi.exe status）
+$wbapi = Join-Path $root "taoapi.exe"
 if (Test-Path $wbapi) {
     $status = & $wbapi status 2>&1 | Out-String
     $acctCount = ([regex]::Matches($status, "正常|限流|禁用")).Count

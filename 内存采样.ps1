@@ -52,9 +52,9 @@ Write-Host ("=" * 60) -ForegroundColor DarkGray
 
 # ---- 未指定进程：列出候选并提示（不自动求和）----
 if ($TargetPid -eq 0) {
-    $cands = @(Get-CimInstance Win32_Process -Filter "Name='wbapi.exe'" -ErrorAction SilentlyContinue)
+    $cands = @(Get-CimInstance Win32_Process -Filter "Name='taoapi.exe'" -ErrorAction SilentlyContinue)
     if ($cands.Count -eq 0) {
-        Write-Host "  没有正在运行的 wbapi 进程。" -ForegroundColor Yellow
+        Write-Host "  没有正在运行的 taoapi 进程。" -ForegroundColor Yellow
         Write-Host "  提示：先启动一个全新实例再测 —— 闲置久的进程会被换出，数字不可信。" -ForegroundColor DarkGray
         return
     }

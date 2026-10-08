@@ -28,9 +28,19 @@ import (
 //
 // ⚠️ 这不是"标准 OIDC token endpoint"（Codex 第 28 轮提醒）：
 // 它是**实测出来的站点接口**，可能随上游变更。上游契约文档里如实这么写。
+//
+// 🔴 2026-10-08 起 host 分平台（见 credentialHostFor）：
+//
+//	国内版 www.codebuddy.cn，国际版 www.workbuddy.ai。
+//	实测两个域名的路径**完全相同**（/console/login/enterprise，
+//	无凭据时都返回 401），差别只在域名。
+//
+//	⚠️ 白名单**只有这两个**，绝不通配 —— 它是"凭据只能从哪来"的
+//	安全边界（否则任意站点都能伪造一个凭据响应喂给我们）。
 const (
-	credentialEndpointHost = "www.codebuddy.cn"
-	credentialEndpointPath = "/console/login/enterprise"
+	credentialEndpointHostCN   = "www.codebuddy.cn"
+	credentialEndpointHostIntl = "www.workbuddy.ai"
+	credentialEndpointPath     = "/console/login/enterprise"
 
 	// credentialEndpointMethod 是实测到的请求方法。
 	//
@@ -43,10 +53,25 @@ const (
 	credentialEndpointMethod = http.MethodPost
 )
 
+// credentialHostFor 返回指定平台的凭据下发域名。
+//
+// 未知平台保守回退国内版（与 NormalizePlatform 一致）。
+func credentialHostFor(p Platform) string {
+	if p == PlatformIntl {
+		return credentialEndpointHostIntl
+	}
+	return credentialEndpointHostCN
+}
+
 // credMatcher 判定"某个响应是否就是我们要的凭据下发"。
 //
 // 生产用 newProdCredMatcher()；测试可用 withOverride 指向本地假服务端。
 type credMatcher struct {
+	// platform 决定允许的 host（国内版/国际版）。
+	//
+	// 🔴 零值（""）等于 PlatformCN —— 保守回退，不会因为漏设而放宽成"任意 host"。
+	platform Platform
+
 	// overrideHost / overridePath / overrideHTTPS 用于测试替换端点。
 	//
 	// ⚠️ 刻意做成**实例字段**而不是包级变量（Codex 第 29 轮要求）：
@@ -58,7 +83,15 @@ type credMatcher struct {
 }
 
 // newProdCredMatcher 返回生产匹配器（严格校验上游端点）。
-func newProdCredMatcher() *credMatcher { return &credMatcher{} }
+//
+// 不传平台时保守按国内版（改造前的行为）。
+func newProdCredMatcher(platform ...Platform) *credMatcher {
+	m := &credMatcher{}
+	if len(platform) > 0 {
+		m.platform = platform[0]
+	}
+	return m
+}
 
 // withOverrideForTest 返回一个指向本地假服务端的匹配器副本（仅测试用）。
 //
@@ -104,7 +137,7 @@ func (m *credMatcher) rejectReason(rawURL, method, wantState string) string {
 		return rejectUnparsable
 	}
 
-	scheme, host, path := "https", credentialEndpointHost, credentialEndpointPath
+	scheme, host, path := "https", credentialHostFor(m.platform), credentialEndpointPath
 	if m.overrideHost != "" {
 		scheme, host, path = m.overrideScheme, m.overrideHost, m.overridePath
 	}
@@ -172,12 +205,13 @@ var credEndpointerForTest string
 
 // credMatcherForCapture 返回本次捕获要用的匹配器。
 //
-// 生产返回严格校验的匹配器；测试可通过 `setCredEndpointForTest` 替换端点。
-func credMatcherForCapture() *credMatcher {
+// 生产返回严格校验的匹配器（host 由 platform 决定）；
+// 测试可通过 `setCredEndpointForTest` 替换端点。
+func credMatcherForCapture(platform Platform) *credMatcher {
 	if credEndpointerForTest == "" {
-		return newProdCredMatcher()
+		return newProdCredMatcher(platform)
 	}
-	return newProdCredMatcher().withOverrideForTest(credEndpointerForTest)
+	return newProdCredMatcher(platform).withOverrideForTest(credEndpointerForTest)
 }
 
 // setCredEndpointForTest 让捕获端点指向本地假服务端（**仅测试用**）。

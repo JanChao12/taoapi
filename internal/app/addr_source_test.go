@@ -187,9 +187,73 @@ func TestRelaunchNeverPassesAddrFlag(t *testing.T) {
 			"面板会被告知去一个没有服务的地址")
 	}
 	// 正向确认：必须传的参数还在
-	for _, want := range []string{"relaunchIDFlag", "relaunchOriginFlag"} {
+	for _, want := range []string{"relaunchIDFlag", "relaunchOriginFlag", "FlagSilent"} {
 		if !strings.Contains(code, want) {
-			t.Errorf("relaunchAndHandshake 应传 %s（交接标识与面板 origin）", want)
+			t.Errorf("relaunchAndHandshake 应传 %s（交接标识、面板 origin、静默标志）", want)
 		}
+	}
+}
+
+// TestRelaunchChildGetsTrayRuntime 守：**重启后的子进程必须带 --silent**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 2026-10-07 委托人实测缺陷（原话："我的托盘图标消失了退出不了"）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	不带 --silent 时，serve.go 里 `rt == nil && *silent` 不成立
+//	⇒ **rt 保持 nil** ⇒ 子进程不挂托盘、没有窗口、日志只写 stderr。
+//
+//	后果不是"少个图标"这么轻 —— 而是**服务失去唯一的退出通道**：
+//	  托盘右键「退出」是 GUI 模式关闭服务的正规方式；
+//	  没有托盘就没有窗口消息通道，`taskkill`（不带 /F）会被 Windows 拒绝：
+//	  "This process can only be terminated forcefully"
+//	  （实测确认，因为该进程 MainWindowHandle=0）。
+//	  用户只能去任务管理器强杀，且**强杀会让日志/用量数据来不及落盘**。
+//
+//	⇒ 这不是外观问题，是**可用性缺陷**，必须有测试钉住。
+//
+// 用源码审查而非行为测试：relaunchAndHandshake 会真的拉进程，
+// 无法在单测里安全调用（与相邻的 TestRelaunchNeverPassesAddrFlag 同样选择）。
+func TestRelaunchChildGetsTrayRuntime(t *testing.T) {
+	src, err := os.ReadFile("restart.go")
+	if err != nil {
+		t.Fatalf("读取 restart.go 失败: %v", err)
+	}
+	text := string(src)
+
+	start := strings.Index(text, "func relaunchAndHandshake")
+	if start < 0 {
+		t.Fatal("找不到 relaunchAndHandshake")
+	}
+	rest := text[start:]
+	end := strings.Index(rest, "\nfunc ")
+	if end < 0 {
+		end = len(rest)
+	}
+	body := rest[:end]
+
+	// 去掉注释行，只审可执行代码
+	var codeLines []string
+	for _, ln := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "//") {
+			continue
+		}
+		codeLines = append(codeLines, ln)
+	}
+	code := strings.Join(codeLines, "\n")
+
+	if !strings.Contains(code, "FlagSilent") {
+		t.Error("relaunchAndHandshake 必须给子进程传 FlagSilent（--silent）—— " +
+			"否则重启后子进程 rt==nil：**托盘图标消失、没有办法退出服务**，" +
+			"用户只能强杀（2026-10-07 委托人实测踩到）")
+	}
+
+	// 反向确认：不得为了"有托盘"而把弹窗也带回来。
+	//	--silent 的语义是"挂 GUI 运行时但**不弹提示**"，
+	//	重启是后台行为，弹一个「服务已启动」的框会打扰用户
+	//	（而且重启发生在用户点完确认之后，弹窗纯属多余）。
+	if strings.Contains(code, "FlagGUI") {
+		t.Error("relaunchAndHandshake 不应传 GUI 提示相关标志 —— " +
+			"重启是后台行为，--silent 才是正确语义（挂托盘、不弹窗）")
 	}
 }

@@ -37,6 +37,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -58,6 +59,13 @@ const loginStartTimeout = 10 * time.Minute
 type loginRun struct {
 	mu    sync.Mutex
 	phase login.Phase
+
+	// platform 本次登录的目标平台（国内版/国际版）。
+	//
+	// 🔴 必须在**启动时**定下并贯穿到底（登录页 + 凭据捕获白名单 +
+	//	落盘时的 Platform 字段）。任何一处漏了都会分叉，症状是
+	//	"登录页对了但抓不到凭据"或"账号落到错误的平台池里"。
+	platform string
 
 	// 结果（仅成功时有意义）
 	done     bool
@@ -106,6 +114,37 @@ func handleLoginStart(deps Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── 平台选择（2026-10-08 新增）──
+	//
+	// 🔴 为什么必须让用户显式选：
+	//
+	//	国内版与国际版是**两套账号体系**（不同域名、不同站点）。
+	//	改造前登录页写死国内版 ⇒ 国际版用户根本无从添加。
+	//	而"自动判断"做不到：用户还没登录，程序无从知道他要绑哪个平台。
+	//
+	// 请求体：{"platform":"cn"} 或 {"platform":"intl"}；缺省 = cn（兼容旧前端）。
+	// ⚠️ 非法值**明确报错**而不是静默回退 —— 让用户绑到错误平台的代价
+	//   远大于一次明确的 400（他会以为"登录成功了"但账号在另一个池里）。
+	platform := auth.PlatformCN
+	if r.Body != nil {
+		var req struct {
+			Platform string `json:"platform"`
+		}
+		if dec := json.NewDecoder(io.LimitReader(r.Body, 4096)); dec.Decode(&req) == nil {
+			if strings.TrimSpace(req.Platform) != "" {
+				if !login.IsKnownPlatform(req.Platform) {
+					writeError(w, http.StatusBadRequest, openaiErrTypeInvalidRequest,
+						"bad_platform",
+						"未知平台 "+req.Platform+"；只支持 cn（国内版）或 intl（国际版）")
+					return
+				}
+				if login.NormalizePlatform(req.Platform) == login.PlatformIntl {
+					platform = auth.PlatformIntl
+				}
+			}
+		}
+	}
+
 	// 先查"是否已有流程"再查浏览器 —— 顺序有讲究：
 	// 已有流程时用户该看到"正在进行中"，而不是被浏览器检查的结果误导。
 	// （逆向对照时发现：把浏览器检查放前面，并发请求会拿到 503 而非 409。）
@@ -135,16 +174,17 @@ func handleLoginStart(deps Deps, w http.ResponseWriter, r *http.Request) {
 			"login_busy", "已有一个登录流程在进行中")
 		return
 	}
-	run := &loginRun{phase: login.PhaseStarting, cancelCh: make(chan struct{})}
+	run := &loginRun{phase: login.PhaseStarting, cancelCh: make(chan struct{}), platform: platform}
 	activeLogin.current = run
 	activeLogin.mu.Unlock()
 
 	go runLogin(deps, run)
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"ok":    true,
-		"phase": string(login.PhaseStarting),
-		"hint":  "浏览器窗口已打开，请在其中完成登录。",
+		"ok":       true,
+		"phase":    string(login.PhaseStarting),
+		"platform": string(platform),
+		"hint":     "浏览器窗口已打开，请在其中完成登录。",
 	})
 }
 
@@ -159,7 +199,13 @@ func runLogin(deps Deps, run *loginRun) {
 		activeLogin.mu.Unlock()
 	}()
 
-	res := login.Login(loginStartTimeout, run.setPhase, run.cancelCh)
+	// 把 app 层的平台标识翻译成 login 包的。
+	// （两边的字符串值刻意相同，但类型不同 —— 见 login.Platform 的说明。）
+	lp := login.PlatformCN
+	if run.platform == auth.PlatformIntl {
+		lp = login.PlatformIntl
+	}
+	res := login.LoginFor(lp, loginStartTimeout, run.setPhase, run.cancelCh)
 	if res.Err != nil {
 		run.mu.Lock()
 		run.done = true
@@ -174,7 +220,7 @@ func runLogin(deps Deps, run *loginRun) {
 	//
 	// Codex：「凭据字段解析成功 = 捕获完成，不等于账号验证完成。」
 	// 这里**先验证再落盘** —— 验证失败绝不写入账号库。
-	uid, nickname, credits, err := verifyCredential(deps, creds)
+	uid, nickname, credits, err := verifyCredential(deps, run.platform, creds)
 	if err != nil {
 		run.mu.Lock()
 		run.done = true
@@ -184,9 +230,15 @@ func runLogin(deps Deps, run *loginRun) {
 	}
 
 	// ── 步骤②：验证通过后才落盘 ──
+	//
+	// 🔴 Platform 必须跟着写进去：它决定这个账号以后
+	//	① 用哪套域名发请求、② 落到哪个调度池、③ 面板归到哪一组。
+	//	漏写会默认成国内版，于是一个国际版账号的凭据会被发到国内域名 ——
+	//	表现为"账号显示正常但一调用就失败"。
 	acct := &auth.Account{
 		UID:          uid,
 		Nickname:     nickname,
+		Platform:     run.platform,
 		AccessToken:  creds.AccessToken,
 		RefreshToken: creds.RefreshToken,
 		Status:       pool.StatusNormal,
@@ -233,15 +285,21 @@ func runLogin(deps Deps, run *loginRun) {
 //	    同时补全网页登录凭据里缺失的 uid（占位账号无法落盘）。
 //	 2. Credit：查一次额度 —— 证明这个账号真的"能用"，
 //	    而不只是"能识别身份"。顺带把额度写进账号，避免刚登录就被调度排除。
-func verifyCredential(deps Deps, creds login.Credentials) (string, string, *int64, error) {
+func verifyCredential(deps Deps, platform string, creds login.Credentials) (string, string, *int64, error) {
 	if deps.WBClient == nil {
 		return "", "", nil, errors.New("账号功能未启用")
 	}
 
 	// 用占位 uid 建一个临时凭据去查询。
 	// ⚠️ 这个账号**不进**账号库，只存在于本次调用栈里。
+	//
+	// 🔴 Platform 必须设成用户选的那个：它决定 providerForAccount
+	//	用哪套域名（国内 www.codebuddy.cn / 国际 www.workbuddy.ai）。
+	//	设错的话验证一定失败（拿国际版 token 去国内域名查），
+	//	而错误信息会被我们归类成"凭据无效"，指向完全错误的方向。
 	tmp := &auth.Account{
 		UID:          "pending-login",
+		Platform:     platform,
 		AccessToken:  creds.AccessToken,
 		RefreshToken: creds.RefreshToken,
 		Status:       pool.StatusNormal,

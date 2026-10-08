@@ -294,7 +294,7 @@ func TestTestSeamDoesNotAffectProdMatcher(t *testing.T) {
 	defer restore()
 
 	// 有接缝时：捕获用的匹配器接受它。
-	if !credMatcherForCapture().matches(local, credentialEndpointMethod, state) {
+	if !credMatcherForCapture(PlatformCN).matches(local, credentialEndpointMethod, state) {
 		t.Fatal("接缝未生效 —— 捕获匹配器应接受被替换的端点")
 	}
 

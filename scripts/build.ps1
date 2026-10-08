@@ -1,4 +1,4 @@
-﻿# 离线构建脚本 —— 产出带版本号的 wbapi.exe
+﻿# 离线构建脚本 —— 产出带版本号的 taoapi.exe
 #
 # 用法：
 #   .\scripts\build.ps1                 # 版本号默认 dev
@@ -17,7 +17,7 @@
 
 param(
     [string]$Version = "dev",
-    [string]$Output  = "wbapi.exe",
+    [string]$Output  = "taoapi.exe",
     [switch]$SkipTests
 )
 
@@ -73,7 +73,26 @@ try {
     }
 
     Write-Host "[build] go build..."
-    go build -ldflags "-X $pkg.Version=$Version" -o $Output ./cmd/wbapi
+    # 🔴 必须带 -H=windowsgui —— 这是**产品需求**，不是可选优化。
+    #
+    # ═══════════════════════════════════════════════════════════════
+    # 2026-10-07 委托人实测反馈（原话："我是用户要使用又不是调试
+    # 测试员，搞个终端干嘛"）
+    # ═══════════════════════════════════════════════════════════════
+    #
+    #	漏掉这个标志编出来的是 **WINDOWS_CONSOLE 子系统**（PE 头
+    #	OptionalHeader.Subsystem = 3），双击就弹一个黑色终端窗口 ——
+    #	而本项目的形态是"双击即用的桌面程序 + 托盘图标"，
+    #	黑窗会跟着托盘程序一起常驻，用户看得莫名其妙。
+    #
+    #	带 -H=windowsgui 则是 Subsystem=2（GUI），双击无黑窗。
+    #	⚠️ 代价：**没有控制台**，所以日志必须落文件
+    #	   （internal/app/gui_windows.go 的 newGUIlogger 就是为此）。
+    #	   命令行用法不受影响：GUI 子系统下 stdout 仍可被重定向/管道读。
+    #
+    #	下面是**构建后自检**：直接读 PE 头的 Subsystem 字段断言为 2。
+    #	护栏的另一半在 `TestBuildScriptProducesGUISubsystem`（查本文件文本）。
+    go build -ldflags "-X $pkg.Version=$Version -H=windowsgui" -o $Output ./cmd/wbapi
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
 }
 finally {
@@ -82,6 +101,20 @@ finally {
 
 $exe  = $Output
 $size = (Get-Item $exe).Length
+
+# ── 自检①：PE 子系统必须是 GUI(2) ──
+# 双击弹黑窗就是因为编成了 CONSOLE(3)。这里直接读 PE 头断言，
+# 让"漏了 -H=windowsgui"在构建阶段就炸掉，而不是等用户看到终端窗口。
+$bytes = [System.IO.File]::ReadAllBytes($exe)
+$peOff = [BitConverter]::ToInt32($bytes, 0x3C)
+$optOff = $peOff + 24
+$subsystem = [BitConverter]::ToUInt16($bytes, $optOff + 68)
+if ($subsystem -ne 2) {
+    $what = if ($subsystem -eq 3) { "WINDOWS_CONSOLE(3) —— 双击会弹黑色终端窗口" } else { "未知($subsystem)" }
+    throw "[build] 🔴 PE 子系统 = $what；期望 WINDOWS_GUI(2)。构建命令必须带 -H=windowsgui。"
+}
+Write-Host "[build] 自检: PE 子系统 = WINDOWS_GUI(2) ✓（双击无黑窗）"
+
 Write-Host ("[build] OK -> {0}  ({1:N2} MB)" -f $exe, ($size / 1MB))
 Write-Host "[build] self-check:"
 & $exe version

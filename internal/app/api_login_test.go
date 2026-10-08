@@ -169,6 +169,94 @@ func TestLoginStartRejectsNonPOST(t *testing.T) {
 	}
 }
 
+// TestLoginStartRejectsUnknownPlatform 守：非法平台必须**明确报错**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 为什么不能静默回退（2026-10-08 国际化改造）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	国内版与国际版是**两套账号体系**。若用户传了个拼错的平台名而程序
+//	悄悄按国内版处理，他会打开国内版登录页、绑上一个国内账号 ——
+//	而他本意是绑国际版。**静默回退把"明确的失败"变成了"错误的成功"**。
+//
+//	代价对比：一次 400 用户立刻知道改；一次静默绑错，用户要等到
+//	发现"账号怎么查不到额度"才会回头（甚至永远不回头）。
+func TestLoginStartRejectsUnknownPlatform(t *testing.T) {
+	deps, _, srv := newServeTestEnv(t, "sse-deepseek-noeffort.txt", "uid-a")
+	defer srv.Close()
+
+	for _, bad := range []string{"us", "cn2", "workbuddy", "国际版"} {
+		rec := newRecorder()
+		body := `{"platform":"` + bad + `"}`
+		handleLoginStart(deps, rec, mustRequest(t, http.MethodPost,
+			"/api/accounts/login/start", body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("platform=%q 状态码 = %d，期望 400（非法平台必须明确拒绝，"+
+				"静默回退会绑错平台）", bad, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "bad_platform") {
+			t.Errorf("platform=%q 响应应含 bad_platform 错误码，实际: %s",
+				bad, rec.Body.String())
+		}
+	}
+}
+
+// TestLoginStartAcceptsKnownPlatforms 守：合法平台被接受（并把平台回报给前端）。
+func TestLoginStartAcceptsKnownPlatforms(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"cn", "cn"},
+		{"intl", "intl"},
+		{"", "cn"}, // 缺省 = 国内版（兼容旧前端）
+	} {
+		// 每个用例都要独立的 env：登录会占互斥位。
+		func() {
+			deps, _, srv := newServeTestEnv(t, "sse-deepseek-noeffort.txt", "uid-a")
+			defer srv.Close()
+
+			// 清掉可能残留的登录状态，避免 409 干扰本测试。
+			activeLogin.mu.Lock()
+			prev := activeLogin.current
+			activeLogin.current = nil
+			activeLogin.mu.Unlock()
+			t.Cleanup(func() {
+				activeLogin.mu.Lock()
+				activeLogin.current = prev
+				activeLogin.mu.Unlock()
+			})
+
+			rec := newRecorder()
+			body := `{}`
+			if tc.in != "" {
+				body = `{"platform":"` + tc.in + `"}`
+			}
+			handleLoginStart(deps, rec, mustRequest(t, http.MethodPost,
+				"/api/accounts/login/start", body))
+
+			// 要么 202（已受理），要么 503（本机无浏览器）——
+			// 两者都说明平台校验**通过了**（没走到 400 分支）。
+			if rec.Code == http.StatusBadRequest {
+				t.Errorf("platform=%q 被误拒为 400: %s", tc.in, rec.Body.String())
+			}
+			if rec.Code == http.StatusAccepted &&
+				!strings.Contains(rec.Body.String(), `"platform":"`+tc.want+`"`) {
+				t.Errorf("platform=%q 的响应应回报 platform=%q，实际: %s",
+					tc.in, tc.want, rec.Body.String())
+			}
+			// 清理：本测试不该真的留下登录流程。
+			activeLogin.mu.Lock()
+			if activeLogin.current != nil {
+				activeLogin.current.canceled = true
+				close(activeLogin.current.cancelCh)
+				activeLogin.current = nil
+			}
+			activeLogin.mu.Unlock()
+		}()
+	}
+}
+
 // TestLoginCancelIsSafeWhenIdle 守住"没有流程时取消是空操作"。
 func TestLoginCancelIsSafeWhenIdle(t *testing.T) {
 	activeLogin.mu.Lock()

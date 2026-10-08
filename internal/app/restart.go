@@ -403,6 +403,26 @@ func relaunchAndHandshake(addr, restartID, clientOrigin string, logger loggerLik
 	// 用参数数组而不是拼字符串：标识是受控的 hex，但仍不该走命令行拼接
 	// （Codex 明确要求；拼接会让"标识里含空格/引号"这类假设悄悄进入代码）。
 	args := []string{CmdServe}
+	// 🔴 必须带 --silent：让**重启后的子进程也有托盘图标与退出通道**。
+	//
+	// ═══════════════════════════════════════════════════════════════
+	// 2026-10-07 委托人实测缺陷（原话："我的托盘图标消失了退出不了"）
+	// ═══════════════════════════════════════════════════════════════
+	//
+	//	重启前：GUI 模式，有托盘，右键「退出」可用。
+	//	重启后：子进程只带 --restart-id/--panel-origin ⇒ serve.go 里
+	//	        `rt == nil && *silent` 不成立 ⇒ **rt 保持 nil**
+	//	        ⇒ 不挂托盘、没有窗口、日志只写 stderr。
+	//	后果：**托盘图标永久消失，且没有任何退出手段** ——
+	//	      用户只能去任务管理器强杀（`taskkill` 不带 /F 会被拒：
+	//	      "This process can only be terminated forcefully"，
+	//	      实测确认，因为该进程 MainWindowHandle=0，没有窗口消息通道）。
+	//
+	//	为什么用 --silent 而不是新增一个开关：
+	//	  serve.go L150-155 已经把 `--silent` 定义为"**挂 GUI 运行时但不弹提示**"，
+	//	  这正是重启子进程需要的语义 —— 复用既有契约，不新增分支。
+	//	  （`--silent` 抑制的只是启动提示框，见 serve.go L366 `if !rt.silent`。）
+	args = append(args, FlagSilent)
 	if restartID != "" {
 		args = append(args, relaunchIDFlag, restartID)
 	}

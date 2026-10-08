@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -65,6 +66,61 @@ func TestAutostartSilentFlagMatchesApp(t *testing.T) {
 	// 顺手确认它确实是"带横线"的 flag 形态（不是子命令名）
 	if !strings.HasPrefix(FlagSilent, "--") {
 		t.Errorf("FlagSilent = %q，应是 -- 开头的 flag", FlagSilent)
+	}
+}
+
+// TestSetAutoStartUsesDefaultArgs 守：**生产路径**必须复用 DefaultArgs。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 为什么必须单独立这条（2026-10-08 委托人实测缺陷）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	委托人原话："我开机没有自启。"
+//
+//	真因：`autostart_bridge.go` 的 setAutoStart **自己另写了一份参数**
+//	  `autostart.Enable(exe, []string{"serve"})` —— 漏了 `--silent`。
+//	  ⇒ serve.go 的 `if rt == nil && *silent` 不成立
+//	  ⇒ 自启进程不挂托盘、日志只写 stderr
+//	  ⇒ GUI 子系统没有控制台 ⇒ **日志静默丢失**（实测：本次开机零日志记录）
+//
+//	⚠️ 上面两条测试为什么没抓到：
+//	  `TestAutostartArgsAreSilent` / `TestAutostartSilentFlagMatchesApp`
+//	  断言的对象都是 **`autostart.DefaultArgs`**（那个常量一直是对的），
+//	  而**真正写进注册表的是本文件的 setAutoStart** —— 测试根本没碰它。
+//	  ⇒ 典型的"测了常量、没测调用方"盲区；这正是护栏要补的位置。
+//
+// 用源码审查而非行为测试：setAutoStart 会**真的写本机注册表**
+// （与 autostart_windows_test.go 的真实读写测试一样需要门控），
+// 不适合在普通单测里调用。选择与 TestRelaunchNeverPassesAddrFlag 相同的做法。
+func TestSetAutoStartUsesDefaultArgs(t *testing.T) {
+	src, err := os.ReadFile("autostart_bridge.go")
+	if err != nil {
+		t.Fatalf("读取 autostart_bridge.go 失败: %v", err)
+	}
+	text := string(src)
+
+	// 去掉注释行，只审可执行代码
+	var codeLines []string
+	for _, ln := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "//") {
+			continue
+		}
+		codeLines = append(codeLines, ln)
+	}
+	code := strings.Join(codeLines, "\n")
+
+	// 1) 必须把 DefaultArgs 交给 Enable —— 这是"单一真值来源"。
+	if !strings.Contains(code, "autostart.DefaultArgs") {
+		t.Error("setAutoStart 必须复用 autostart.DefaultArgs，不能在调用处另写一份参数 —— " +
+			"另写就会漏掉 --silent，导致自启进程不挂托盘且日志静默丢失" +
+			"（2026-10-08 委托人实测踩到，原话\"我开机没有自启\"）")
+	}
+
+	// 2) 反向确认：不得再出现字面量参数列表（`[]string{"serve"}` 那种）。
+	//	注释里会提到这个历史写法，所以只查可执行代码。
+	if strings.Contains(code, `[]string{"serve"}`) {
+		t.Error("setAutoStart 里出现了硬编码的 []string{\"serve\"} —— " +
+			"这正是漏掉 --silent 的历史写法，请改为 autostart.DefaultArgs")
 	}
 }
 

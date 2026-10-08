@@ -714,6 +714,30 @@
     openModal(
       '<h3>添加账号</h3>'
       // ═══════════════════════════════════════════════════════════════
+      // 平台选择（2026-10-08 新增）—— 必须先选平台再登录
+      // ═══════════════════════════════════════════════════════════════
+      //
+      // 🔴 为什么必须有这一步：
+      //
+      //	国内版与国际版是**两套账号体系**（不同域名、不同站点）。
+      //	改造前登录页写死 www.codebuddy.cn ⇒ 国际版用户**根本无法添加**。
+      //	而程序无法替用户"自动判断"：他还登录，我们无从知道他要绑哪个平台。
+      //
+      // 平台选择放在最上面：它是后续两种方式（网页登录 / 粘贴凭据）的**前提**。
+      // 只有"网页登录"真的需要它（粘贴方式能从 domain 字段自动识别平台），
+      // 但放在共同位置更好理解，也避免用户事后才发现进错了站点。
+      + '<div class="import-guide">'
+      +   '<b>第一步：选择要添加哪个平台的账号</b>'
+      +   '<div class="platform-picker" id="platform-picker">'
+      +     '<label class="platform-opt"><input type="radio" name="login-platform" value="cn" checked>'
+      +       '<span><b>国内版</b><span class="platform-host">www.codebuddy.cn</span></span></label>'
+      +     '<label class="platform-opt"><input type="radio" name="login-platform" value="intl">'
+      +       '<span><b>国际版</b><span class="platform-host">www.workbuddy.ai</span></span></label>'
+      +   '</div>'
+      +   '<p class="import-guide-note">选哪个平台，就会打开<b>那个平台</b>的官方登录页。'
+      +     '两者账号不通用，请按你实际持有账号的平台选择。</p>'
+      + '</div>'
+      // ═══════════════════════════════════════════════════════════════
       // 两种方式并列（2026-10-05 更新）
       // ═══════════════════════════════════════════════════════════════
       //
@@ -756,6 +780,8 @@
       +       '复制其中的 <code>accessToken</code> / <code>uid</code> 等字段</li>'
       +     '<li>把 JSON 粘贴到下面的框里（或整份文件内容贴进来也能识别）</li>'
       +   '</ol>'
+      +   '<p class="import-guide-note">平台会按凭据里的 <code>domain</code> 字段'
+      +     '<b>自动识别</b>，所以这种方式不需要在上面选平台。</p>'
       + '</div>'
       + '<textarea id="import-text" placeholder="' + esc(IMPORT_PLACEHOLDER) + '"></textarea>'
       + '<div class="modal-actions">'
@@ -774,6 +800,14 @@
 
     var cancelBtn = document.getElementById('btn-login-cancel');
     if (cancelBtn) cancelBtn.addEventListener('click', cancelWebLogin);
+  }
+
+  // selectedPlatform 读当前选中的平台（"添加账号"弹窗里的单选）。
+  //
+  // 缺省 cn：与改造前行为一致（旧前端不传这个值时服务端也默认 cn）。
+  function selectedPlatform() {
+    var el = document.querySelector('input[name="login-platform"]:checked');
+    return el ? el.value : 'cn';
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -839,10 +873,20 @@
     var btn = document.getElementById('btn-web-login');
     var hint = document.getElementById('login-hint');
     if (btn) btn.disabled = true;
-    if (hint) hint.textContent = '正在启动…';
+
+    // 🔴 必须把用户选的平台发给服务端：它决定打开哪个登录页，
+    //	以及凭据捕获的域名白名单（两者必须一致，否则"登录成功抓不到凭据"）。
+    var platform = selectedPlatform();
+    if (hint) {
+      hint.textContent = '正在启动…（' + (platform === 'intl' ? '国际版 workbuddy.ai' : '国内版 codebuddy.cn') + '）';
+    }
     setLoginProgress('starting');
 
-    fetchJSON('/api/accounts/login/start', { method: 'POST' })
+    fetchJSON('/api/accounts/login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: platform })
+    })
       .then(function () {
         if (hint) hint.textContent = '浏览器窗口已打开';
         setLoginProgress('waiting');

@@ -794,6 +794,45 @@ body {
   font-size: 12px;
 }
 
+/* ── 平台选择（添加账号的第一步，2026-10-08） ──
+ *
+ * 国内版与国际版是两套账号体系，必须先选平台再登录。
+ * 做成两张并排的大卡片而不是下拉框：这是一个**二选一且不可反悔**的
+ * 决定（选错会打开错误站点的登录页），卡片能同时显示域名，
+ * 让用户明确知道自己在绑哪个站点。
+ */
+.platform-picker {
+  display: flex;
+  gap: 10px;
+  margin: 8px 0 0;
+}
+.platform-opt {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.platform-opt:hover { border-color: #8ab4f8; }
+/* 选中态：用 :has 让整张卡片高亮（现代 Chrome/Edge 均支持）。
+ * 不支持 :has 时退化为"只有单选按钮被选中"，功能不受影响。 */
+.platform-opt:has(input:checked) {
+  border-color: #1a73e8;
+  background: #eaf2fe;
+}
+.platform-opt input { margin: 0; flex: 0 0 auto; }
+.platform-opt span { display: flex; flex-direction: column; line-height: 1.4; }
+.platform-host {
+  color: #6b7280;
+  font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
 /* ─────────────────────────────────────────────────────────────
    网页登录：进度条与状态（2026-10-05）
    ─────────────────────────────────────────────────────────────

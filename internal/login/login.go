@@ -60,10 +60,77 @@ import (
 	"time"
 )
 
-// LoginURLTemplate 是官方登录页（实测 301 → /login/ → 200）。
+// LoginURLTemplate 是**国内版**官方登录页（实测 301 → /login/ → 200）。
 //
 // platform=CLI 与官方 CLI 客户端一致；state 由我们生成并由凭据端点带回。
+//
+// ⚠️ 2026-10-08 起请用 LoginURLFor(platform) —— 见下方说明。
 const LoginURLTemplate = "https://www.codebuddy.cn/login/?platform=CLI&state=%s"
+
+// LoginURLTemplateIntl 是**国际版**官方登录页（实测 200）。
+//
+// 🔴 为什么需要它（2026-10-08 委托人实测缺陷）：
+//
+//	原实现把登录页**写死**成国内版 www.codebuddy.cn，导致
+//	**国际版账号无法通过「网页登录」添加** —— 用户在国际版登录页
+//	根本登录不了自己的账号（域名不对，账号体系不同）。
+//	面板虽然能按平台分组显示，但"添加"这条路只有国内版。
+//
+// 实测：https://www.workbuddy.ai/login/?platform=CLI&state=... → HTTP 200
+const LoginURLTemplateIntl = "https://www.workbuddy.ai/login/?platform=CLI&state=%s"
+
+// Platform 标识要登录哪个站点。
+//
+// 字符串值与 auth.PlatformCN / auth.PlatformIntl **一致**（"cn"/"intl"），
+// 但本包刻意**不 import auth**（login 是底层工具包，不该依赖上层领域模型）。
+// 有一个测试（TestPlatformValuesMatchAuth）钉住两者一致。
+type Platform string
+
+const (
+	// PlatformCN 国内版（www.codebuddy.cn / copilot.tencent.com）。
+	PlatformCN Platform = "cn"
+
+	// PlatformIntl 国际版（www.workbuddy.ai）。
+	PlatformIntl Platform = "intl"
+)
+
+// NormalizePlatform 把外部输入归一为已知平台。
+//
+// 未知/空值**保守地**回退到国内版（改造前的行为），
+// 而不是报错：登录流程不该因为一个拼错的平台名就整条不可用。
+// 但调用方（面板）应当只传已知值；服务端也做校验并回报明确错误。
+func NormalizePlatform(s string) Platform {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "intl", "international", "ai", "workbuddyai":
+		return PlatformIntl
+	default:
+		return PlatformCN
+	}
+}
+
+// IsKnownPlatform 报告输入是否是**明确支持**的平台标识。
+//
+// 与 NormalizePlatform 的区别：后者永不失败（用于"宽松回退"），
+// 前者用于"校验用户输入并给明确错误"。
+func IsKnownPlatform(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "cn", "intl", "international", "ai", "workbuddyai":
+		return true
+	}
+	return false
+}
+
+// LoginURLFor 返回指定平台的登录页 URL（含 state）。
+//
+// 🔴 平台决定域名，而域名决定**账号体系** —— 选错平台会让用户
+//
+//	在一个不属于自己的站点上登录，表现为"登录页能打开但登录不了"。
+func LoginURLFor(p Platform, state string) string {
+	if p == PlatformIntl {
+		return fmt.Sprintf(LoginURLTemplateIntl, state)
+	}
+	return fmt.Sprintf(LoginURLTemplate, state)
+}
 
 // 默认超时。用户登录（扫码/短信）需要时间，给足。
 const (
@@ -124,6 +191,29 @@ type ProgressFunc func(Phase)
 //
 //	真正的"可用性"要靠后续查一次额度来证明。
 func Login(timeout time.Duration, onProgress ProgressFunc, cancel <-chan struct{}) Result {
+	// 保留旧签名：默认国内版（改造前的行为）。
+	// 需要国际版请用 LoginFor。
+	return LoginFor(PlatformCN, timeout, onProgress, cancel)
+}
+
+// LoginFor 执行一次指定平台的网页登录。
+//
+// 与 Login 的唯一区别是多一个 platform 参数：
+//   - PlatformCN  → 登录页 www.codebuddy.cn，凭据端点 host 也是它
+//   - PlatformIntl → 登录页 www.workbuddy.ai，凭据端点 host 也是它
+//
+// 🔴 平台必须**同时**作用于"登录页"与"凭据捕获白名单"。
+//
+//	只改其中一个会出现最诡异的失败：用户在正确的站点登录成功，
+//	但程序在监听另一个域名的响应 ⇒ **凭据永远抓不到**，
+//	表现成"登录一直在转圈"，且没有任何错误线索。
+//	（cdp.go 的 credMatcher 与此处共用同一个 platform 参数来防这个分叉。）
+func LoginFor(
+	platform Platform,
+	timeout time.Duration,
+	onProgress ProgressFunc,
+	cancel <-chan struct{},
+) Result {
 	if timeout <= 0 {
 		timeout = defaultLoginTimeout
 	}
@@ -143,7 +233,7 @@ func Login(timeout time.Duration, onProgress ProgressFunc, cancel <-chan struct{
 
 	// ── 2. 启动受控浏览器 ──
 	report(PhaseStarting)
-	startURL := fmt.Sprintf(LoginURLTemplate, state)
+	startURL := LoginURLFor(platform, state)
 	sess, err := StartBrowser(LoginOptions{StartURL: startURL})
 	if err != nil {
 		report(PhaseFailed)
@@ -153,7 +243,7 @@ func Login(timeout time.Duration, onProgress ProgressFunc, cancel <-chan struct{
 	defer sess.Close()
 
 	// ── 3. 连接 CDP 并开启监听（必须在导航稳定前就绪）──
-	creds, err := captureCredentials(sess, state, timeout, report, cancel)
+	creds, err := captureCredentials(sess, platform, state, timeout, report, cancel)
 	if err != nil {
 		if errors.Is(err, errCanceled) {
 			report(PhaseCanceled)
@@ -187,14 +277,18 @@ func newState() (string, error) {
 }
 
 // captureCredentials 连上 CDP，监听凭据响应并提取。
+//
+// ⚠️ platform 决定凭据捕获的**域名白名单**（见 credmatch.go）。
+// 传错会让"登录成功但抓不到凭据"，且没有任何错误线索。
 func captureCredentials(
 	sess *BrowserSession,
+	platform Platform,
 	state string,
 	timeout time.Duration,
 	report func(Phase),
 	cancel <-chan struct{},
 ) (Credentials, error) {
-	return captureCredentialsWithTrigger(sess, state, timeout, report, cancel, nil)
+	return captureCredentialsWithTrigger(sess, platform, state, timeout, report, cancel, nil)
 }
 
 // triggerFunc 在生产会话就绪后收到该会话本身（**仅测试用**）。
@@ -223,6 +317,7 @@ type triggerFunc func(sess *cdpSession)
 // 但在 Network 域就绪后把**生产会话本身**交给 onReady（可为 nil）。
 func captureCredentialsWithTrigger(
 	sess *BrowserSession,
+	platform Platform,
 	state string,
 	timeout time.Duration,
 	report func(Phase),
@@ -282,7 +377,7 @@ func captureCredentialsWithTrigger(
 	//
 	// ⚠️ Codex 第 29 轮要求接缝为**实例级**，不用包级可变全局 ——
 	// 见 credmatch.go 的说明。
-	matcher := credMatcherForCapture()
+	matcher := credMatcherForCapture(platform)
 
 	// tryFinish 的前置声明：它在回调里被引用，但定义在回调之后
 	// （为了把大段注释留在回调外面，不打断事件分支的可读性）。

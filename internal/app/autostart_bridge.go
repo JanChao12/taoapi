@@ -39,8 +39,36 @@ func setAutoStart(enable bool) error {
 	if err != nil {
 		return err
 	}
-	// 开机时要自动起服务，所以固定带 serve 子命令。
-	// 注意 autostart.DefaultArgs 也是 serve，但那是给测试用的默认值；
-	// 这里显式传入是本层的决定，不依赖那个默认值。
-	return autostart.Enable(exe, []string{"serve"})
+	// 🔴 必须带 --silent（用 autostart.DefaultArgs，不要在这里另写一份）。
+	//
+	// ═══════════════════════════════════════════════════════════════
+	// 2026-10-08 委托人实测缺陷："我开机没有自启"
+	// ═══════════════════════════════════════════════════════════════
+	//
+	//	本行原先写的是 `autostart.Enable(exe, []string{"serve"})` ——
+	//	**漏了 --silent**。后果与重启子进程那个缺陷同源
+	//	（serve.go L154 `if rt == nil && *silent`）：
+	//
+	//	  rt 保持 nil ⇒ 不挂托盘、**日志只写 stderr**
+	//	  ⇒ GUI 子系统（-H=windowsgui）**没有控制台** ⇒ 日志静默丢失。
+	//
+	//	实测证据：自启进程（pid 928，监听 4567）跑起来了，
+	//	  但它的日志文件最后一行停在**上一次启动**，本次开机零记录 ——
+	//	  排查时看不到任何痕迹，于是委托人只能判断成"没自启"。
+	//
+	//	为什么测试没抓到：`TestAutostartArgsAreSilent` 断言的是
+	//	  **autostart.DefaultArgs**（那个是对的），
+	//	  而本函数**自己另写了一份参数**，于是成了测试的盲区。
+	//	⇒ 现在改为直接复用 DefaultArgs，并加 `TestSetAutoStartUsesDefaultArgs` 钉住。
+	//
+	// 🔴 另外：测试二进制**绝不写注册表**。
+	//
+	//	`go test` 下 os.Executable() 是临时路径（...\Temp\go-build...\pkg.test.exe）。
+	//	若测试间接调到本函数，会把用户真实的自启项改成**测试结束后即消失**的
+	//	临时文件 —— 而 Run 键失效是静默的，用户下次开机毫无线索。
+	//	（2026-10-08 在 Heal 路径上**实测踩到过**，详见 autostart.IsTestBinary。）
+	if autostart.IsTestBinary(exe) {
+		return nil
+	}
+	return autostart.Enable(exe, autostart.DefaultArgs)
 }

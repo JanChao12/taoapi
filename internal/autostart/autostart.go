@@ -152,3 +152,147 @@ func validateExePath(exePath string) error {
 	}
 	return nil
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// 自愈：exe 被移到别处后，自动修正注册表里的旧路径
+// ═══════════════════════════════════════════════════════════════════
+
+// HealOutcome 描述一次自愈检查的结果。
+type HealOutcome int
+
+const (
+	// HealNotEnabled：值不存在 ⇒ 用户没启用自启（或主动关了）⇒ 不动。
+	//
+	// 🔴 这一条是**安全边界**：绝不能因为"发现没注册"就顺手替用户打开自启。
+	//	用户关掉自启是明确意图，替它打开属于越权。
+	HealNotEnabled HealOutcome = iota
+
+	// HealUnchanged：已启用且路径与当前 exe 一致 ⇒ 不动。
+	HealUnchanged
+
+	// HealRewritten：已启用但路径指向别处（exe 被移动/改名）⇒ 已用当前路径重写。
+	HealRewritten
+)
+
+// String 让日志与测试断言都能读到可读的结论。
+func (h HealOutcome) String() string {
+	switch h {
+	case HealNotEnabled:
+		return "未启用（不动）"
+	case HealUnchanged:
+		return "路径一致（不动）"
+	case HealRewritten:
+		return "路径已过期（已重写）"
+	default:
+		return fmt.Sprintf("未知(%d)", int(h))
+	}
+}
+
+// ParseExePath 从注册表存的那条命令行里取出 exe 路径（第一个参数）。
+//
+// 存在的理由：注册表里存的是**整条命令行字符串**（路径 + 参数），
+// 要判断"路径是否变了"就必须先把路径部分切出来。
+//
+// 规则（与 CommandLine 的写法对称）：
+//   - 以双引号开头 → 取到下一个双引号为止（CommandLine 对含空格路径加引号）；
+//   - 否则 → 取到第一个空白为止。
+//
+// 取不到时返回空串，调用方应视为"无法判定"而不是"需要重写"。
+func ParseExePath(cmdLine string) string {
+	s := strings.TrimLeft(cmdLine, " \t")
+	if s == "" {
+		return ""
+	}
+	if s[0] == '"' {
+		rest := s[1:]
+		if i := strings.IndexByte(rest, '"'); i >= 0 {
+			return rest[:i]
+		}
+		// 引号没闭合：整条都是路径（畸形值，交给调用方当"无法判定"）
+		return ""
+	}
+	if i := strings.IndexAny(s, " \t"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// SameExePath 比较两个路径是否指向同一个可执行文件。
+//
+// 为什么不用 filepath.Clean 后直接比：
+//
+//	本项目要在 windows 与 linux 双向编译（CI 检查），
+//	而 filepath.Clean 在两个平台对分隔符的处理不同 ——
+//	用平台相关的语义去比对"Windows 注册表里的路径"会得出不一致的结论。
+//
+// 这里采用**与平台无关**的保守比较：忽略大小写（Windows 路径不区分大小写）、
+// 去掉尾部斜杠与首尾空白。宁可"判成一致"（少写一次注册表）也不误判。
+func SameExePath(a, b string) bool {
+	norm := func(s string) string {
+		s = strings.TrimSpace(s)
+		s = strings.TrimRight(s, `\/`)
+		return s
+	}
+	return strings.EqualFold(norm(a), norm(b))
+}
+
+// NeedsHeal 判断一条已注册的命令行是否需要按当前 exe 路径重写。
+//
+// 纯函数（不碰注册表），因此可以在任何平台单测 —— 注册表读写必须门控，
+// 但"该不该写"这个**决策**是本缺陷的核心，必须能无条件测到。
+//
+//   - cmdLine 为空（值不存在）→ false：用户没启用自启，不越权打开。
+//   - 解析不出路径（畸形值）→ false：**不猜**，留给用户手动处理。
+//   - 路径不同 → true。
+func NeedsHeal(cmdLine, exePath string) bool {
+	if strings.TrimSpace(cmdLine) == "" {
+		return false
+	}
+	registered := ParseExePath(cmdLine)
+	if registered == "" {
+		return false
+	}
+	return !SameExePath(registered, exePath)
+}
+
+// IsTestBinary 判断一个 exe 路径是否属于 Go 的**临时测试二进制**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 为什么必须有这道闸（2026-10-08 我自己踩的坑，比原缺陷更糟）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	自愈的判据是 os.Executable()。而 `go test` 下它是
+//	`...\Temp\go-build<random>\bNNN\<pkg>.test.exe` —— 一个**临时**路径。
+//
+//	于是 `go test ./internal/app/` 真的把用户注册表里的自启项
+//	  从 `D:\tools\TAOAPI\taoapi.exe`
+//	  改写成了 `C:\...\Temp\go-build...\app.test.exe`（**实测发生**，已手工恢复）。
+//
+//	后果极严重：开机自启指向一个**测试结束后就被删掉**的临时文件，
+//	而 Run 键失效是**静默的** ⇒ 用户下次开机服务不会起来，且毫无线索。
+//
+//	⚠️ 教训：**自愈类逻辑必须限定在"真实运行"语境**。
+//	  原缺陷是"该修没修"，这个坑是"**主动改坏了用户的注册表**"——
+//	  方向相反，破坏力更大。所以判定要保守到"宁可少修"。
+//
+// 判定依据（三条任一命中即认为是测试二进制）：
+//   - 以 `.test.exe` 结尾（Go 测试二进制的固定命名）；
+//   - 路径里含 `go-build` 段（go 的临时构建目录）；
+//   - 路径里含临时目录的 `\Temp\` 段。
+func IsTestBinary(exePath string) bool {
+	p := strings.TrimSpace(exePath)
+	if p == "" {
+		return false
+	}
+	lower := strings.ToLower(p)
+	if strings.HasSuffix(lower, ".test.exe") {
+		return true
+	}
+	if strings.Contains(lower, `\go-build`) || strings.Contains(lower, `/go-build`) {
+		return true
+	}
+	if strings.Contains(lower, `\temp\`) || strings.Contains(lower, `/temp/`) {
+		return true
+	}
+	return false
+}

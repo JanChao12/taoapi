@@ -48,3 +48,15 @@ func Enabled() (bool, error) {
 func CommandLineFromRegistry() (string, error) {
 	return "", ErrUnsupported
 }
+
+// Heal 在非 Windows 平台没有注册表可自愈。
+//
+// 🔴 刻意**不**返回 (HealUnchanged, nil)：
+//
+//	那会让调用方以为"检查过了、没问题"。这里必须让"做不到"这件事
+//	带着 ErrUnsupported 显式暴露出来，与 Enable/Disable/Enabled 同一取舍
+//	（见本文件顶部关于"静默降级"的说明）。
+func Heal(exePath string) (HealOutcome, error) {
+	_ = exePath
+	return HealUnchanged, ErrUnsupported
+}

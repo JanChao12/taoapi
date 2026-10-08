@@ -63,10 +63,10 @@
 
 ```powershell
 # 1. 构建（需要 Go 1.22+）
-go build -o wbapi.exe ./cmd/wbapi
+go build -o taoapi.exe ./cmd/wbapi
 
 # 2. 启动服务（只监听回环）
-.\wbapi.exe serve
+.\taoapi.exe serve
 
 # 3. 打开面板
 #    http://127.0.0.1:8787/panel/
@@ -182,7 +182,7 @@ workbuddy-api/
 
 ```powershell
 # 构建（零第三方依赖，无需 vendor，可离线）
-go build -o wbapi.exe ./cmd/wbapi
+go build -o taoapi.exe ./cmd/wbapi
 
 # 离线构建验证（自持约束）
 $env:GOPROXY = "off"; go build ./cmd/wbapi

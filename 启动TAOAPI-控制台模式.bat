@@ -3,13 +3,13 @@ rem ============================================================
 rem  TAOAPI launcher (optional)
 rem
 rem  NOTE: this .bat is NO LONGER REQUIRED.
-rem  Just double-click wbapi.exe directly -- it starts the
+rem  Just double-click taoapi.exe directly -- it starts the
 rem  service with a tray icon and shows the panel address.
 rem
 rem  This file only exists for the case where you want a
 rem  console-visible run (for troubleshooting).
 rem
-rem  What it does: run `wbapi.exe serve` in the foreground,
+rem  What it does: run `taoapi.exe serve` in the foreground,
 rem  so logs are visible in this window. Closing the window
 rem  stops the service.
 rem ============================================================
@@ -21,9 +21,9 @@ title TAOAPI (console mode)
 
 cd /d "%~dp0"
 
-if not exist "wbapi.exe" (
+if not exist "taoapi.exe" (
     echo.
-    echo [ERROR] wbapi.exe not found in this folder.
+    echo [ERROR] taoapi.exe not found in this folder.
     echo.
     pause
     exit /b 1
@@ -38,12 +38,12 @@ echo   KEEP THIS WINDOW OPEN. Closing it stops the service.
 echo      To stop: close this window, or press Ctrl+C.
 echo.
 echo   Tip: for the normal (tray, no console) experience,
-echo        just double-click wbapi.exe instead.
+echo        just double-click taoapi.exe instead.
 echo.
 echo ------------------------------------------------------------
 echo.
 
-wbapi.exe serve
+taoapi.exe serve
 
 echo.
 echo ------------------------------------------------------------

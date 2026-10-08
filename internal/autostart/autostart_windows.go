@@ -5,6 +5,7 @@ package autostart
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -227,6 +228,67 @@ func CommandLineFromRegistry() (string, error) {
 		return "", fmt.Errorf("autostart：注册表值 %s 类型不是 REG_SZ（实际 %d）", ValueName, valType)
 	}
 	return data, nil
+}
+
+// Heal 修正"exe 被移到别处"后注册表里的**过期路径**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 为什么需要自愈（2026-10-08 委托人提问："文件夹地址换了，自启是不是又失效"）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	Run 键里存的是**写入那一刻的绝对路径字符串**，不是"跟着 exe 走"的引用。
+//	把文件夹改名或移动（甚至只改 exe 文件名）之后：
+//
+//	  注册表仍写着旧路径 → 开机时 Windows 找不到该文件
+//	  → **静默失败**（不弹框、不写日志、什么都不发生）
+//	  → 而面板的 Enabled() 只查"值是否存在"，仍显示"已开启"
+//	  ⇒ 用户看到的界面在**骗他**，且没有任何线索指向注册表。
+//
+//	自愈的边界（🔴 必须守住的语义）：
+//
+//	  1. **只在"已启用"时才修** —— 值不存在 = 用户主动关过自启，
+//	     绝不能顺手替他打开（HealNotEnabled 分支刻意什么都不做）。
+//	  2. **只在路径确实不同时才写** —— 避免每次启动都无谓写注册表。
+//	  3. **解析不出路径时不猜** —— 畸形值保持原样，留给用户手动处理，
+//	     总好过程序擅自改成它以为对的值。
+//	  4. 🔴 **自身是测试二进制时绝不写** —— 否则 `go test` 会把用户的
+//	     真实自启项改成临时测试路径（**2026-10-08 实测踩到并已恢复**，
+//	     详见 IsTestBinary 的注释）。
+//
+//	⚠️ 自愈**必须靠"手动运行一次"触发**：自启已经失效，程序不会自己起来。
+//	  它解决的是"你手动打开一次，以后就自动好了"，不是"完全无感"。
+//
+// 返回值告诉调用方发生了什么（用于记日志，也让测试能断言"没越权打开"）。
+func Heal(exePath string) (HealOutcome, error) {
+	if err := validateExePath(exePath); err != nil {
+		// 路径本身非法：不写注册表（写了也是坏值）。
+		// 返回 HealUnchanged 而不是 error —— 这不是"自愈失败"，
+		// 而是"没有可修的东西"，不该让启动流程报错。
+		return HealUnchanged, nil
+	}
+	// 🔴 测试二进制绝不写注册表：见 IsTestBinary 的详细说明。
+	// 返回 HealUnchanged（不是错误）：测试环境下"没有可修的东西"是正常状态。
+	if IsTestBinary(exePath) {
+		return HealUnchanged, nil
+	}
+
+	cur, err := CommandLineFromRegistry()
+	if err != nil {
+		// 读不到（键打不开/权限异常）：不动它，把真实错误交给调用方记日志。
+		return HealUnchanged, err
+	}
+	if strings.TrimSpace(cur) == "" {
+		return HealNotEnabled, nil
+	}
+	if !NeedsHeal(cur, exePath) {
+		return HealUnchanged, nil
+	}
+
+	// 路径确实过期 → 用当前 exe 路径按标准参数重写。
+	if err := Enable(exePath, DefaultArgs); err != nil {
+		return HealUnchanged, err
+	}
+	return HealRewritten, nil
 }
 
 // openRunKey 以 desiredAccess 权限打开 HKCU 下的 Run 键。

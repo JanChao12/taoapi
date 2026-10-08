@@ -95,11 +95,19 @@ func TestPanelRestartProbeUsesFourConditions(t *testing.T) {
 	js := string(body)
 
 	// 1) 四条件的每一项都要在代码里出现
+	//
+	//    🔴 服务标识这一项**必须由后端常量推导**，不能写死字面量。
+	//	本测试原先写死 `"h.service !== 'wbapi'"` ——
+	//	产品改名 TAOAPI 后它仍在"守护"旧名字，**等于把缺陷钉死**：
+	//	它保证了前端继续用 'wbapi'，于是重启后自动重连永远失败
+	//	（2026-10-07 委托人实测：重启明明成功，面板报"未能连接"）。
+	//	⇒ **会撒谎的检查器比没有检查器更糟。**
+	//	现在改为拼出后端真实值，改名时两侧必须一起改，否则这条立刻红。
 	for _, want := range []string{
-		"h.service !== 'wbapi'",     // 条件 2：服务标识
-		"h.ready !== true",          // 条件 3：就绪
-		"h.restartId !== restartId", // 条件 4：本次交接标识
-		"r.ok",                      // 条件 1：HTTP 成功
+		"h.service !== '" + healthServiceName + "'", // 条件 2：服务标识（与后端同源）
+		"h.ready !== true",                          // 条件 3：就绪
+		"h.restartId !== restartId",                 // 条件 4：本次交接标识
+		"r.ok",                                      // 条件 1：HTTP 成功
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("settings.js 的探活判据缺少 %q —— "+
@@ -127,6 +135,89 @@ func TestPanelRestartProbeUsesFourConditions(t *testing.T) {
 		t.Error("settings.js 未把 location.origin 交给服务端 —— " +
 			"新进程无法把旧 origin 加进 CORS 白名单，自动重连会失效")
 	}
+}
+
+// TestPanelServiceNameMatchesBackend 守**跨端**的服务标识一致性。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 为什么单独立一条（2026-10-07 委托人实测缺陷）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	产品 2026-10-06 改名 wbapi → TAOAPI，`healthServiceName` 跟着改了，
+//	但**前端 settings.js 的 pollRestart 仍写死 'wbapi'**。
+//	⇒ 导航四条件的第 2 条**永远不成立** ⇒ 面板一直探到 30 秒 deadline
+//	  ⇒ giveUp() 报「重启后未能连接，请手动访问 http://127.0.0.1:<新端口>/panel/」。
+//	  而**新端口其实一直是好的** —— 委托人手动访问就打开了。
+//
+//	症状极具误导性：面板说"未连接"，用户以为端口/占用出了问题，
+//	实际是**重启完全成功、只是前端不认对面的身份**。
+//
+// ⚠️ 为什么既有测试全都没抓到：
+//
+//	后端侧的断言写的是 `hr.Service != ProductName`（自己比自己），
+//	前端侧的断言写死了 `"h.service !== 'wbapi'"`（把缺陷钉死）。
+//	**两边各自自洽，唯独没有一条测试把两侧放在一起比。**
+//	本测试补的就是这个缺口 —— 它是唯一能抓住"只改一侧"的检查。
+func TestPanelServiceNameMatchesBackend(t *testing.T) {
+	srv := newPanelServer(t, usagepkg.NewStore(t.TempDir()))
+
+	resp, err := http.Get(srv.URL + "/panel/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	js := string(body)
+
+	want := "h.service !== '" + healthServiceName + "'"
+
+	// 只查可执行代码：注释里会引用旧名解释历史，那是背景，不该导致失败。
+	var found bool
+	for _, line := range strings.Split(js, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		if strings.Contains(line, want) {
+			found = true
+			break
+		}
+	}
+	if found {
+		return
+	}
+
+	// 没找到 → 再确认一下是不是"用了别的服务名"（给出精确诊断，别只说没找到）。
+	// 这条诊断信息是本测试的价值所在：它能直接指出两侧的具体取值。
+	code := stripLineComments(js)
+	const marker = "h.service !=="
+	if i := strings.Index(code, marker); i >= 0 {
+		got := strings.TrimSpace(code[i+len(marker):])
+		if j := strings.IndexAny(got, "|)"); j >= 0 {
+			got = strings.TrimSpace(got[:j])
+		}
+		t.Errorf("前端 settings.js 期望 service=%s，而后端 healthServiceName=%q —— "+
+			"两侧不一致 ⇒ 导航四条件第 2 条永不成立 ⇒ "+
+			"重启后自动重连永远失败（面板会误报「重启后未能连接」）。"+
+			"改名时必须两侧一起改。", got, healthServiceName)
+		return
+	}
+	t.Errorf("settings.js 的探活判据里找不到服务标识判断 %q "+
+		"（既然后端报 %q，前端必须逐字比对）", want, healthServiceName)
+}
+
+// stripLineComments 去掉每行的 `//` 行注释，只留可执行代码。
+//
+// 面板是手写 ES5，没有块注释包住代码的情况，简单剥离即可。
+func stripLineComments(js string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(js, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // codeSendsPanelOrigin 判断 JS 是否**在请求体里**带了 location.origin。

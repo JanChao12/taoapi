@@ -166,7 +166,7 @@ func TestCaptureE2ESameSessionFetch(t *testing.T) {
 
 	start := time.Now()
 	creds, err := captureCredentialsWithTrigger(
-		sess, wantState, 30*time.Second,
+		sess, PlatformCN, wantState, 30*time.Second,
 		func(p Phase) {},
 		nil,
 		func(s *cdpSession) {

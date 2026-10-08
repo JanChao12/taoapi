@@ -860,7 +860,7 @@
   //   同样得到 ok:true 且 body 可读 → 仍会误判并跳过去。
   //
   // v3（当前）：普通 CORS fetch + **四条件全中**才导航：
-  //     response.ok && service==='wbapi' && ready===true && restartId===本次标识
+  //     response.ok && service==='TAOAPI' && ready===true && restartId===本次标识
   //   第四项用于排除"上一次重启遗留的、还活着的旧进程"
   //   （它同样会返回 service/ready，只有交接标识能区分是不是**本次**的）。
   function pollRestart(newAddr, restartId) {
@@ -989,13 +989,22 @@
             return; // 上面已经安排了重试
           }
           // 四条件全中才导航（缺一不可）。
-          if (h.service !== 'wbapi' || h.ready !== true) {
+          //
+          // 🔴 这里的服务标识必须与后端 healthServiceName 一致。
+          //	2026-10-07 实测缺陷：产品改名 wbapi → TAOAPI 时**只改了后端常量**，
+          //	前端这里仍写死 'wbapi' ⇒ 第四条件永远不成立 ⇒
+          //	面板一直探到 30 秒 deadline，走 giveUp() 报
+          //	「重启后未能连接，请手动访问 http://127.0.0.1:<新端口>/panel/」——
+          //	**而新端口其实一直是好的**（用户手动访问能开）。
+          //	即"重启明明成功了，面板却说失败"。
+          //	护栏：`TestPanelServiceNameMatchesBackend`（跨端一致性，防再改名漏改）。
+          if (h.service !== 'TAOAPI' || h.ready !== true) {
             // 对面不是我们的服务（或没就绪）→ 不跳。
             setTimeout(probeNewOrigin, 1000);
             return;
           }
           if (restartId && h.restartId !== restartId) {
-            // 是 wbapi，但不是**本次**交接的进程
+            // 是 TAOAPI，但不是**本次**交接的进程
             // （可能是上次重启遗留的旧进程）→ 不跳。
             // ⚠️ 这也是"新地址没能提供本次交接的服务" → 计入失败前提。
             newProbeFailedOnce = true;
@@ -1239,6 +1248,137 @@
     });
   }
 
+  // ── 版本与更新 ──
+  //
+  // 🔴 安全说明（改这块前必读）
+  //
+  //   「立即更新并重启」会**替换正在运行的程序**。所以：
+  //     · 必须先「检查更新」拿到服务端认可的版本，不能直接提交任意 URL
+  //       （服务端也据此校验：没有 lastRel 就 409）
+  //     · 执行前**必须让用户二次确认** —— 这是会改程序文件的操作
+  //     · 服务端会校验 SHA256；前端只需如实显示失败原因
+  //
+  //   前端**不做任何信任决策**：版本比较、URL 白名单、哈希校验全在服务端。
+  //   这里只负责"发起 + 展示"。
+
+  function renderUpdate(d) {
+    if (!d) return;
+    setText('st-upd-current', d.current ? 'v' + d.current : '—');
+
+    var stateEl = document.getElementById('st-upd-state');
+    var msgBox = document.getElementById('st-upd-msg');
+    var tipEl = document.getElementById('st-upd-tip');
+    var errEl = document.getElementById('st-upd-err');
+
+    if (errEl) setText('st-upd-err', '');
+
+    // 开发构建：明确说明"不参与更新"，而不是显示"已是最新"骗人。
+    if (d.dev) {
+      if (stateEl) setText('st-upd-state', '开发构建（未注入版本号）—— 不参与更新检查');
+      if (msgBox) msgBox.classList.add('st-hidden');
+      return;
+    }
+
+    if (d.checking) {
+      if (stateEl) setText('st-upd-state', '正在检查…');
+      return;
+    }
+    if (d.downloading) {
+      if (stateEl) setText('st-upd-state', '正在下载并校验…（请勿关闭页面）');
+      return;
+    }
+
+    if (d.checkError) {
+      if (stateEl) setText('st-upd-state', '检查失败');
+      if (errEl) setText('st-upd-err', d.checkError);
+      if (msgBox) msgBox.classList.add('st-hidden');
+      return;
+    }
+
+    // 上次执行的结果优先显示（更新成功/失败都留痕）
+    if (d.lastResult) {
+      if (stateEl) {
+        setText('st-upd-state', d.lastResultOK ? '✓ ' + d.lastResult : '✗ ' + d.lastResult);
+      }
+      if (d.lastResultOK && msgBox) msgBox.classList.add('st-hidden');
+      return;
+    }
+
+    if (d.hasUpdate) {
+      if (stateEl) setText('st-upd-state', '发现新版本 v' + d.latest + '（当前 v' + d.current + '）');
+      if (tipEl) setText('st-upd-tip', '可更新到 v' + d.latest);
+      if (msgBox) msgBox.classList.remove('st-hidden');
+      return;
+    }
+
+    if (d.lastCheck) {
+      if (stateEl) setText('st-upd-state', '已是最新版本（v' + d.current + '）');
+    } else if (stateEl) {
+      setText('st-upd-state', '尚未检查');
+    }
+    if (msgBox) msgBox.classList.add('st-hidden');
+  }
+
+  function loadUpdateStatus() {
+    fetchJSON('/api/update').then(function (d) {
+      renderUpdate(d);
+    }).catch(function () {
+      // 老版本服务端没有这个接口 —— 静默即可，不打扰用户
+      setText('st-upd-state', '当前运行方式不支持自动更新');
+    });
+  }
+
+  function checkUpdate() {
+    var btn = document.getElementById('btn-upd-check');
+    if (btn && btn.disabled) return;
+    if (btn) btn.disabled = true;
+    setText('st-upd-state', '正在检查…');
+    setText('st-upd-err', '');
+
+    fetchJSON('/api/update/check', { method: 'POST' }).then(function (d) {
+      renderUpdate(d);
+      if (d && d.hasUpdate) toast('发现新版本 v' + d.latest, 'ok');
+      else if (d && !d.checkError) toast('已是最新版本', 'ok');
+    }).catch(function (e) {
+      setText('st-upd-state', '检查失败');
+      setText('st-upd-err', joinErr('检查更新失败', e));
+    }).then(function () {
+      if (btn) btn.disabled = false;
+    });
+  }
+
+  function applyUpdate() {
+    var btn = document.getElementById('btn-upd-apply');
+    if (btn && btn.disabled) return;
+
+    openConfirm(
+      '立即更新并重启？',
+      '<p>将下载新版本，<b>校验 SHA256 通过后替换当前程序</b>，然后自动重启服务。</p>'
+      + '<p>替换期间服务会短暂中断；旧版本保留为 <code>.old</code>，可手工回滚。</p>'
+      + '<p>若校验不通过，更新会被<b>拒绝</b>，程序不受影响。</p>',
+      '立即更新',
+      function () {
+        if (btn) btn.disabled = true;
+        setText('st-upd-state', '正在下载并校验…（请勿关闭页面）');
+        setText('st-upd-err', '');
+
+        return fetchJSON('/api/update/apply', { method: 'POST' }).then(function (d) {
+          toast('更新成功，服务正在重启…', 'ok');
+          setText('st-upd-state', '✓ ' + ((d && d.message) || '已更新，正在重启'));
+          // 更新成功会触发服务端重启 ⇒ 这里开始探活并自动重连
+          // （复用改端口重启那套；端口没变，走同源 reload）
+          pollRestart('', '');
+        }).catch(function (e) {
+          var msg = joinErr('更新失败', e);
+          toast(msg, 'bad');
+          setText('st-upd-state', '✗ 更新失败');
+          setText('st-upd-err', msg);
+          if (btn) btn.disabled = false;
+        });
+      }
+    );
+  }
+
   function initOnce() {
     // 密钥区（新交互：输入框直接编辑 + 保存/清空）
     // 不再有「更换」「取消」「复制」—— 输入框永远在那儿，无需展开；
@@ -1249,6 +1389,9 @@
 
     on('btn-st-port-save', savePort);
     on('btn-st-restart', restartServer);
+
+    on('btn-upd-check', checkUpdate);
+    on('btn-upd-apply', applyUpdate);
 
     // 开关：绑在开关元素自身（id 即 st-auto-*），HTML 片段与 CSS 都按这个 id 写
     on('st-auto-checkin', toggleAutoCheckin);
