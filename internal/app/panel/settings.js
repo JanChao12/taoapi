@@ -223,6 +223,7 @@
 
   function loadSettings() {
     loadModels();    // 只读展示，不阻塞设置本身
+    loadUpdateStatus();  // 版本状态（只读 GET，失败不影响设置页）
     var seq = ++loadSeq;
     return fetchJSON('/api/settings').then(function (d) {
       if (seq !== loadSeq) return;   // 已有更新的请求发出，本次结果作废
@@ -238,6 +239,20 @@
         box.textContent = '设置读取失败：' + ((e && e.message) || '未知错误');
         box.classList.remove('st-hidden');
       }
+      console.error(e);
+    });
+  }
+
+  // loadUpdateStatus 读版本/更新状态（GET，无副作用）。
+  //
+  // 🔴 刻意**只读、绝不自动检查**：不在这里调 /api/update/check。
+  //	那会变成"面板一打开就偷偷访问 GitHub" —— 与委托方
+  //	"只有点按钮才检测"的要求相悖。
+  function loadUpdateStatus() {
+    return fetchJSON('/api/update').then(function (d) {
+      renderUpdateStatus(d);
+    }).catch(function (e) {
+      // 服务不支持时静默（该区块显示「—」即可，不该刷红）
       console.error(e);
     });
   }
@@ -279,6 +294,28 @@
       if (v !== null && v !== undefined && v !== '') return v;
     }
     return null;
+  }
+
+  // keepaliveRuntime 读凭证保活的运行状态。
+  //
+  // 后端契约（settings.go 的 keepaliveStatusView）：
+  //   keepaliveRun: { enabled, running, lastRunAt, lastResult, lastError }
+  //
+  // ⚠️ 与 checkinRuntime 的"宽泛取字段名"不同：这是**本轮刚定的契约**，
+  //	不存在历史字段名，所以只认一个形状 —— 猜字段名反而会掩盖契约不一致。
+  //	缺字段就显示「—」，不报错（守护未装配时确实没有这个对象）。
+  function keepaliveRuntime(d) {
+    d = d || {};
+    var raw = (d.keepaliveRun && typeof d.keepaliveRun === 'object') ? d.keepaliveRun : null;
+    if (!raw) return { at: '—', result: '—' };
+
+    // 有错误优先显示错误（那是最需要用户知道的信息）。
+    var result = raw.lastError ? ('⚠️ ' + raw.lastError) : (raw.lastResult || '—');
+    if (raw.running) result = '检查中…';
+    return {
+      at: fmtTime(raw.lastRunAt) || '—',
+      result: String(result)
+    };
   }
 
   function aliasesOf(d) {
@@ -373,11 +410,24 @@
     // 字段缺失时界面会显示"已启用"，而服务实际并没在签到。
     var autoCheckin = d.autoCheckin === true;   // 默认关（与后端一致）
     var autoStart = d.autoStart === true;       // 默认关
+
+    // 凭证保活：后端默认 **开**（与上面两个相反）。
+    //
+    // 🔴 为什么要显式区分（2026-10-09）：
+    //
+    //	后端把"老配置里没这个键"与"用户明确关掉"区分开（Keepalive 是
+    //	*bool），GET /api/settings 已经把 nil 归一成 true 再下发，
+    //	所以这里**只认 true/false 本身** —— 不要写 `!== false` 之类的
+    //	"缺省当开"，那会在后端将来改成默认关时静默不一致
+    //	（自动签到就踩过这个坑，见上面的注释）。
+    var keepalive = d.keepalive === true;
     setToggle('st-auto-checkin', autoCheckin);
     setToggle('st-auto-start', autoStart);
+    setToggle('st-keepalive', keepalive);
 
     var apiKeyLine = d.apiKeySet === true ? '已设置' : '未设置';
     setText('st-sum-auto-checkin', '自动签到当前：' + (autoCheckin ? '已启用' : '已停用'));
+    setText('st-sum-keepalive', '凭证保活当前：' + (keepalive ? '已启用' : '已停用'));
     setText('st-sum-auto-start', '开机自启当前：' + (autoStart ? '已启用' : '已停用'));
     setText('st-sum-api-key', '接口密钥：' + apiKeyLine);
     setText('st-sum-port', '监听端口：' + ((d.port === null || d.port === undefined) ? '—' : d.port));
@@ -386,6 +436,11 @@
     setText('st-checkin-state', autoCheckin ? '已启用' : '已停用');
     setText('st-checkin-at', rt.at);
     setText('st-checkin-result', rt.result);
+
+    // 保活运行状态（上次检查时间 / 结果）。
+    var kp = keepaliveRuntime(d);
+    setText('st-keepalive-at', kp.at);
+    setText('st-keepalive-result', kp.result);
 
     // ── 映射表 ──
     // 注意顺序：renderAliases 会清空草稿并重绘草稿表，必须在它之后
@@ -1045,6 +1100,153 @@
     save({ autoStart: next }, '开机自启已' + (next ? '启用' : '停用') + '（立即生效）');
   }
 
+  // toggleKeepalive 切换凭证保活。
+  //
+  // 🔴 关掉时的告警措辞很重要：关掉不会立刻有任何变化，
+  //	但**将来**凭据过期时会需要重新登录 —— 用户必须知道这个后果。
+  function toggleKeepalive() {
+    var cur = lastSettings ? lastSettings.keepalive === true : true;
+    var next = !cur;
+    var msg = next
+      ? '凭证保活已启用（立即生效）'
+      : '凭证保活已停用 —— 凭据过期后将需要重新登录';
+    save({ keepalive: next }, msg);
+  }
+
+  // ── 版本与更新（2026-10-09）──
+  //
+  // 🔴 与"自动更新"的区别（委托方明确要求）：
+  //
+  //	原话：「没有软件自动更新功能，但是有检测最新版本按钮，
+  //	       检测出新版本后会有更新版本的按钮，点了就自动安装并更新」
+  //
+  //	⇒ 后端**没有任何定时/后台**的更新逻辑（全项目搜不到 update 的 ticker）。
+  //	  两个按钮分别对应两个接口：
+  //	    「检测新版本」 → POST /api/update/check（只查，不改任何东西）
+  //	    「更新到新版本」→ POST /api/update/apply（下载+校验+替换+重启）
+  //	  后者只在**检测到有更新时**才显示（后端也再校验一次，双保险）。
+
+  // updateState 保存最近一次检测结果，供"是否显示更新按钮"判断。
+  var updateState = { hasUpdate: false, latest: '', busy: false };
+
+  function renderUpdateStatus(d) {
+    d = d || {};
+    updateState.hasUpdate = d.hasUpdate === true;
+    updateState.latest = d.latest || '';
+
+    setText('st-ver-current', d.current ? ('v' + d.current) : '—');
+
+    // 开发构建：明确说明不参与更新检查（否则用户会以为"已是最新"）
+    if (d.dev) {
+      setText('st-ver-note', '当前是开发构建（版本号未注入），不参与更新检查。');
+    } else if (d.releaseConfigured === false) {
+      setText('st-ver-note', '当前运行方式不支持检查更新。');
+    }
+
+    var applyBtn = document.getElementById('btn-st-update-apply');
+    if (applyBtn) {
+      // 只在**确实有更新**时显示「更新」按钮。
+      //
+      // ⚠️ 不要因为"上次检测过"就常显 —— 那会让用户在一个
+      //	其实已是最新的版本上看到"更新"按钮，属于骗人。
+      if (updateState.hasUpdate && !updateState.busy) {
+        applyBtn.classList.remove('st-hidden');
+        applyBtn.textContent = '更新到 v' + updateState.latest;
+      } else {
+        applyBtn.classList.add('st-hidden');
+      }
+    }
+
+    // 检测/下载状态
+    if (d.checking) {
+      setText('st-update-msg', '正在检测…');
+    } else if (d.downloading) {
+      setText('st-update-msg', '正在下载并校验…');
+      showUpdateProgress(true);
+    } else {
+      showUpdateProgress(false);
+      if (d.checkError) {
+        setText('st-update-msg', '');
+        setText('st-update-result', '⚠️ 检测失败：' + d.checkError);
+      } else if (d.hasUpdate) {
+        setText('st-update-msg', '发现新版本 v' + d.latest);
+      } else if (d.latest) {
+        setText('st-update-msg', '已是最新版本');
+      } else if (d.lastCheck) {
+        setText('st-update-msg', '已是最新版本（官方仓库暂无更新发布）');
+      }
+    }
+    if (d.lastResult) {
+      setText('st-update-result', (d.lastResultOK ? '✅ ' : '⚠️ ') + d.lastResult);
+    }
+  }
+
+  function showUpdateProgress(on) {
+    var box = document.getElementById('st-update-progress');
+    if (!box) return;
+    box.classList.toggle('st-hidden', !on);
+    var bar = document.getElementById('st-update-bar');
+    if (bar) bar.style.width = on ? '100%' : '0%';
+  }
+
+  // checkUpdate 点「检测新版本」。
+  function checkUpdate() {
+    var btn = document.getElementById('btn-st-update-check');
+    if (btn) btn.disabled = true;
+    setText('st-update-msg', '正在检测…');
+    setText('st-update-result', '');
+
+    fetchJSON('/api/update/check', { method: 'POST' })
+      .then(function (d) {
+        renderUpdateStatus(d);
+      })
+      .catch(function (e) {
+        setText('st-update-msg', '');
+        setText('st-update-result', '⚠️ 检测失败：' + ((e && e.message) || '未知错误'));
+        console.error(e);
+      })
+      .then(function () {
+        if (btn) btn.disabled = false;
+      });
+  }
+
+  // applyUpdate 点「更新到新版本」。
+  //
+  // 🔴 这是一次**会替换正在运行的程序**的操作 ⇒ 必须二次确认。
+  //	确认框里要说清后果（服务会重启、面板会短暂断开），
+  //	而不是一句干巴巴的"确定吗"。
+  function applyUpdate() {
+    if (!updateState.hasUpdate) return;
+    openConfirm(
+      '更新到 v' + updateState.latest + '？',
+      '<p>将下载新版本、<b>校验 SHA256</b>，通过后替换当前程序并<b>自动重启服务</b>。</p>'
+      + '<p>重启期间面板会短暂断开，之后请刷新页面。</p>'
+      + '<p class="st-danger-line">校验不通过会中止更新，不会留下半成品。</p>',
+      '确认更新',
+      function () {
+        updateState.busy = true;
+        var btn = document.getElementById('btn-st-update-apply');
+        if (btn) btn.disabled = true;
+        setText('st-update-result', '正在下载并校验，请勿关闭…');
+        showUpdateProgress(true);
+
+        return fetchJSON('/api/update/apply', { method: 'POST' })
+          .then(function (d) {
+            setText('st-update-result', '✅ ' + ((d && d.message) || '更新完成'));
+            // 服务即将重启：提示用户稍后刷新。
+            setText('st-update-msg', '服务正在重启，请稍候刷新页面…');
+          })
+          .catch(function (e) {
+            updateState.busy = false;
+            showUpdateProgress(false);
+            if (btn) btn.disabled = false;
+            setText('st-update-result', '⚠️ 更新失败：' + ((e && e.message) || '未知错误'));
+            console.error(e);
+          });
+      }
+    );
+  }
+
   // ── 映射表 ──
 
   function openAliasForm() {
@@ -1262,6 +1464,11 @@
     // 开关：绑在开关元素自身（id 即 st-auto-*），HTML 片段与 CSS 都按这个 id 写
     on('st-auto-checkin', toggleAutoCheckin);
     on('st-auto-start', toggleAutoStart);
+    on('st-keepalive', toggleKeepalive);
+
+    // 版本与更新：两个按钮，都只在用户点击时才动（无后台自动更新）
+    on('btn-st-update-check', checkUpdate);
+    on('btn-st-update-apply', applyUpdate);
 
     // 「加入草稿」只进本地草稿；「保存映射」才发 PATCH —— 两个按钮职责不同，
     // 必须是两个不同的处理函数（曾把两者都绑到 saveAliases，表现是点「加入草稿」

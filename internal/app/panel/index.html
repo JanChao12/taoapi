@@ -273,6 +273,7 @@
           <span class="st-toggle-state" id="st-sum-api-key">接口密钥：—</span>
           <span class="st-toggle-state" id="st-sum-port">监听端口：—</span>
           <span class="st-toggle-state" id="st-sum-auto-checkin">自动签到当前：—</span>
+          <span class="st-toggle-state" id="st-sum-keepalive">凭证保活当前：—</span>
           <span class="st-toggle-state" id="st-sum-auto-start">开机自启当前：—</span>
         </div>
       </section>
@@ -397,6 +398,32 @@
         </div>
 
         <div class="st-row">
+          <div class="st-row-label">凭证保活</div>
+          <div class="st-row-body">
+            <div class="st-line">
+              <button type="button" class="st-toggle" id="st-keepalive" role="switch" aria-checked="false" aria-label="凭证保活"></button>
+              <span class="st-toggle-state" id="st-sum-keepalive">凭证保活当前：—</span>
+            </div>
+            <span class="hint-text st-hint-block">
+              默认<b>开启</b>。开启后服务会定期检查各账号的登录凭据，在<b>临近过期前自动续期</b>，
+              让账号尽量不用重新登录。关闭后凭据过期只能重新登录。
+            </span>
+            <div class="st-line" style="margin-top:6px;">
+              <span class="st-toggle-state">上次检查：</span>
+              <span class="st-value-plain" id="st-keepalive-at">—</span>
+              <span class="st-toggle-state" style="margin-left:12px;">结果：</span>
+              <span class="st-value-plain" id="st-keepalive-result">—</span>
+            </div>
+            <span class="hint-text st-hint-block">
+              ⚠️ <b>如实说明</b>：续期端点已实测可用（含重启后从落盘凭据续期），
+              但<b>「access token 已过期之后能否续期」尚未验证</b> ——
+              已实测的续期都是在 token 未过期时调用的。
+              所以本功能能减少重复登录，但<b>不能承诺永不过期</b>。
+            </span>
+          </div>
+        </div>
+
+        <div class="st-row">
           <div class="st-row-label">开机自启</div>
           <div class="st-row-body">
             <div class="st-line">
@@ -483,6 +510,44 @@
         <!-- 给「目标模型」输入框做候选提示：只列出真实模型 ID，
              这样正常操作下不会把目标写成另一个别名（那会形成循环） -->
         <datalist id="st-model-options"></datalist>
+      </section>
+
+      <!-- ══ 区 5：版本与更新 ══ -->
+      <section class="panel" id="st-sec-update">
+        <div class="panel-head">
+          <h2>版本与更新</h2>
+          <div class="st-head-tags"><span class="st-chip st-chip-now">手动触发</span></div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">当前版本</div>
+          <div class="st-row-body">
+            <span class="st-value" id="st-ver-current">—</span>
+            <span class="hint-text st-hint-block" id="st-ver-note">
+              点「检测新版本」去官方仓库查询最新发布；检测<b>不会</b>改动任何东西。
+            </span>
+          </div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-row-label">检测与更新</div>
+          <div class="st-row-body">
+            <div class="st-line">
+              <button type="button" class="btn" id="btn-st-update-check">检测新版本</button>
+              <button type="button" class="btn btn-primary st-hidden" id="btn-st-update-apply">更新到新版本</button>
+              <span class="hint-text" id="st-update-msg"></span>
+            </div>
+            <div class="st-line st-hidden" id="st-update-progress">
+              <div class="login-bar"><div class="login-bar-fill" id="st-update-bar"></div></div>
+            </div>
+            <span class="hint-text st-hint-block">
+              🔴 <b>本程序不会自动更新</b> —— 没有任何后台静默下载或替换。
+              只有你点「更新到新版本」时，才会下载新版本、<b>校验 SHA256</b>，
+              通过后替换程序并自动重启。校验不通过会中止，不会留下半成品。
+            </span>
+            <span class="hint-text st-hint-block" id="st-update-result"></span>
+          </div>
+        </div>
       </section>
 
     </section>
