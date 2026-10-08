@@ -697,18 +697,11 @@
       + '</li>';
   }
 
-  // ── 「导入账号」模态 ──
-
-  var IMPORT_PLACEHOLDER = '[\n'
-    + '  {\n'
-    + '    "uid": "...",\n'
-    + '    "nickname": "...",\n'
-    + '    "accessToken": "...",\n'
-    + '    "refreshToken": "...",\n'
-    + '    "domain": "www.codebuddy.cn"\n'
-    + '  }\n'
-    + ']\n\n'
-    + '也支持 {"accounts": [ ... ]} 包裹形式';
+  // ── 「添加账号」模态 ──
+  //
+  // ⚠️ 函数名仍叫 openImportModal（按钮 id 也仍是 btn-import）——
+  //	改名的收益只是好看，而 id 被后端测试与面板快照引用，
+  //	改动会带来无谓的连锁修改。语义已从"导入"变成"添加账号"。
 
   function openImportModal() {
     openModal(
@@ -738,28 +731,31 @@
       +     '两者账号不通用，请按你实际持有账号的平台选择。</p>'
       + '</div>'
       // ═══════════════════════════════════════════════════════════════
-      // 两种方式并列（2026-10-05 更新）
+      // 只有「网页登录」一种方式（2026-10-09 委托方要求）
       // ═══════════════════════════════════════════════════════════════
       //
-      // 委托方要求「网页登录的快捷，不需要下载软件」，已实现并获得
-      // Codex 第 28 轮的合规确认（用户主动发起 / 本人账号 / 官方登录页 /
-      // 程序创建的独立浏览器会话 / 最小范围提取 / 本地保存）。
+      // 🔴 委托方原话：「方式二：粘贴凭据，取消这个登录方式，太不方便了。」
       //
-      // ⚠️ 这里**保留导入方式作为并列入口**，不是替代关系：
-      //   1. 本机没装 Chrome/Edge 时，网页登录用不了（不静默下载浏览器）
-      //   2. 有些用户已经有凭据，直接粘贴更快
-      //   3. 网页登录失败时要有退路
+      //	改造前这里有并列的"方式二：粘贴凭据"（要求用户去装官方客户端、
+      //	翻本机凭据文件、手工复制 accessToken）。委托方明确要求删掉它 ——
+      //	网页登录已经是完整的替代路径，粘贴方式纯属负担。
       //
-      // 关于"不用自动扫描本机客户端目录"：Codex 第 7 轮 C4 的招牌否决仍有效，
-      // 理由是「那会把外部项目的文件格式变成隐性依赖，也容易误读 refresh token」。
-      // 本面板不会替用户去读任何外部目录。
+      // ⚠️ 删除的范围**只有面板 UI**：
+      //	· 后端 `/api/accounts/import` 保留（CLI `wbapi auth import` 仍在用，
+      //	  且它也是"网页登录失败时的退路"）
+      //	· 因此 app.js 里的 flattenCredential / doImport 一并移除 ——
+      //	  它们只服务于这个已删除的输入框，留着就是死代码。
+      //
+      // ⚠️ 本面板**不会**去自动扫描本机客户端目录（Codex 第 7 轮 C4 的
+      //	招牌否决仍有效：那会把外部项目的文件格式变成隐性依赖，
+      //	也容易误读 refresh token）。用户想自己粘贴，请走 CLI。
       + '<div class="import-guide">'
-      +   '<b>方式一：网页登录（推荐）</b>'
+      +   '<b>网页登录</b>'
       +   '<p>点下面的按钮会打开一个浏览器窗口，用<b>你要绑定的那个账号</b>正常登录即可，'
       +     '登录成功后凭据会自动保存，无需手动复制任何东西。</p>'
       +   '<p class="import-guide-note">需要本机已安装 Chrome 或 Edge。'
       +     '登录期间会临时启动一个<b>独立</b>的浏览器实例（与你日常用的浏览器互不影响），'
-      +     '登录结束即关闭。</p>'
+      +     '<b>登录结束后窗口会保留</b>，你可以确认登录结果再自己关掉。</p>'
       +   '<div class="modal-actions" style="margin-top:10px;">'
       +     '<button type="button" class="btn btn-primary" id="btn-web-login">网页登录</button>'
       +     '<span class="modal-hint" id="login-hint">将打开浏览器窗口</span>'
@@ -771,29 +767,9 @@
       +       '<button type="button" class="btn" id="btn-login-cancel">取消</button>'
       +     '</div>'
       +   '</div>'
-      + '</div>'
-      + '<div class="import-guide">'
-      +   '<b>方式二：粘贴凭据</b>'
-      +   '<ol>'
-      +     '<li>安装并登录 <b>CodeBuddy 官方客户端</b>（用你要绑定的那个账号）</li>'
-      +     '<li>官方客户端会把登录凭据存在本机。用文本编辑器打开其中的凭据文件，'
-      +       '复制其中的 <code>accessToken</code> / <code>uid</code> 等字段</li>'
-      +     '<li>把 JSON 粘贴到下面的框里（或整份文件内容贴进来也能识别）</li>'
-      +   '</ol>'
-      +   '<p class="import-guide-note">平台会按凭据里的 <code>domain</code> 字段'
-      +     '<b>自动识别</b>，所以这种方式不需要在上面选平台。</p>'
-      + '</div>'
-      + '<textarea id="import-text" placeholder="' + esc(IMPORT_PLACEHOLDER) + '"></textarea>'
-      + '<div class="modal-actions">'
-      +   '<button type="button" class="btn btn-primary" id="btn-do-import">导入</button>'
-      +   '<span class="modal-hint">uid 与 accessToken 必填；导入后自动刷新额度</span>'
-      + '</div>'
-      + '<div class="import-result" id="import-result" style="display:none;"></div>',
+      + '</div>',
       true
     );
-
-    var doBtn = document.getElementById('btn-do-import');
-    if (doBtn) doBtn.addEventListener('click', doImport);
 
     var loginBtn = document.getElementById('btn-web-login');
     if (loginBtn) loginBtn.addEventListener('click', startWebLogin);
@@ -960,139 +936,16 @@
       });
   }
 
-  // flattenCredential 把「官方客户端那种嵌套凭据」压平成导入接口要的形状。
+  // ── 说明：原先的「粘贴凭据」导入 UI 已于 2026-10-09 按委托方要求删除 ──
   //
-  // 🔴 为什么需要（实测过的真实结构）：
+  // 原话：「方式二：粘贴凭据，取消这个登录方式，太不方便了。」
   //
-  //	客户端存的凭据形如：
-  //	  { "account": {"uid":…, "nickname":…, "enterpriseId":…},
-  //	    "auth":    {"accessToken":…, "refreshToken":…, "domain":…} }
-  //	而我们的导入接口要的是**扁平**的：
-  //	  {"uid":…, "accessToken":…, "refreshToken":…, "nickname":…}
+  // 连带删掉了只服务于它的 flattenCredential / doImport / renderImportResult。
   //
-  //	也兼容已经扁平的形状（用户手工复制字段的情形）——
-  //	所以是"缺什么补什么"，而不是强制嵌套。
-  //
-  // ⚠️ 本函数只做**形状转换**，不校验、不猜测。
-  //    缺 uid/accessToken 时留给后端报错（错误信息更权威、也更集中）。
-  function flattenCredential(o) {
-    if (!o || typeof o !== 'object') return o;
-    var out = {};
-    // 先铺平顶层（用户已扁平粘贴的情况）
-    for (var k in o) {
-      if (Object.prototype.hasOwnProperty.call(o, k) &&
-          k !== 'account' && k !== 'auth') {
-        out[k] = o[k];
-      }
-    }
-    // 再用嵌套层补齐（只在顶层没有该字段时）
-    var src = [o.account, o.auth];
-    for (var i = 0; i < src.length; i++) {
-      var seg = src[i];
-      if (!seg || typeof seg !== 'object') continue;
-      for (var k2 in seg) {
-        if (Object.prototype.hasOwnProperty.call(seg, k2) && !out[k2]) {
-          out[k2] = seg[k2];
-        }
-      }
-    }
-    return out;
-  }
+  // ⚠️ 后端 `/api/accounts/import` **保留**：CLI `wbapi auth import` 仍在用，
+  //    它也是"网页登录不可用（没装 Chrome/Edge）时的退路"。
+  //    需要粘贴凭据的用户请走 CLI —— 面板不再提供这个入口。
 
-  function doImport() {
-    var ta = document.getElementById('import-text');
-    var resultEl = document.getElementById('import-result');
-    if (!ta || !resultEl) return;
-
-    var parsed;
-    try {
-      parsed = JSON.parse(ta.value);
-    } catch (e) {
-      resultEl.style.display = '';
-      resultEl.innerHTML = '<div class="import-summary"><b class="bad">JSON 解析失败</b>：' + esc(e.message) + '</div>';
-      return;
-    }
-
-    // 数组 → 包成 {accounts: arr}；对象带 accounts 字段 → 直接发
-    //
-    // 🔴 新增：**单个凭据对象**（即官方客户端存的那种文件原样粘贴）也要接受。
-    //
-    //	为什么（委托方痛点）：引导里让他"打开凭据文件、复制字段"，
-    //	但最简单最不容易错的做法是**整份文件内容直接粘贴**。
-    //	若只接受数组会报"格式不对"，用户还得手工改成数组 —— 容易出错。
-    //
-    //	判定依据：对象里**有 uid 或 accessToken** 就算单个账号凭据。
-    //	（官方客户端的凭据文件形如 {account:{...}, auth:{...}}，
-    //	  字段可能在嵌套层 —— 所以下面的字段扁平化也要处理。）
-    var payload;
-    if (Object.prototype.toString.call(parsed) === '[object Array]') {
-      payload = { accounts: parsed };
-    } else if (parsed && typeof parsed === 'object' && parsed.accounts) {
-      payload = parsed;
-    } else if (parsed && typeof parsed === 'object' &&
-               (parsed.uid || parsed.accessToken || parsed.auth || parsed.account)) {
-      payload = { accounts: [flattenCredential(parsed)] };
-    } else {
-      resultEl.style.display = '';
-      resultEl.innerHTML = '<div class="import-summary"><b class="bad">格式不对</b>：'
-        + '需要数组、含 accounts 字段的对象，或单个账号凭据对象</div>';
-      return;
-    }
-
-    var doBtn = document.getElementById('btn-do-import');
-    if (doBtn) doBtn.disabled = true;
-    resultEl.style.display = '';
-    resultEl.innerHTML = '<div class="import-summary">导入中…</div>';
-
-    fetchJSON('/api/accounts/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).then(function (res) {
-      renderImportResult(res);
-      loadAccts();
-    }).catch(function (e) {
-      resultEl.innerHTML = '<div class="import-summary"><b class="bad">导入失败</b>：' + esc(e.message) + '</div>';
-      console.error(e);
-    }).then(function () {
-      if (doBtn) doBtn.disabled = false;
-    });
-  }
-
-  function renderImportResult(res) {
-    var resultEl = document.getElementById('import-result');
-    if (!resultEl) return;
-
-    var html = '<div class="import-summary">'
-      + '成功 <b class="ok">' + esc(String(res.ok || 0)) + '</b>'
-      + ' / 失败 <b class="bad">' + esc(String(res.failed || 0)) + '</b>'
-      + '</div>';
-
-    var errors = res.errors || [];
-    if (errors.length) {
-      html += '<ul class="import-errors">';
-      for (var i = 0; i < errors.length; i++) html += '<li>' + esc(errors[i]) + '</li>';
-      html += '</ul>';
-    }
-
-    var accts = res.accounts || [];
-    if (accts.length) {
-      html += '<ul class="import-accts">';
-      for (var j = 0; j < accts.length; j++) {
-        var it = accts[j];
-        var cred = (it.credits === null || it.credits === undefined)
-          ? '<span class="cred-bad">' + esc(it.error || '额度刷新失败') + '</span>'
-          : '<span class="cred-ok">额度 ' + esc(String(it.credits)) + '</span>';
-        html += '<li>'
-          + '<span>' + esc(it.nickname || it.uid) + ' <span class="mono">' + esc(it.uid) + '</span></span>'
-          + '<span>' + cred + '</span>'
-          + '</li>';
-      }
-      html += '</ul>';
-    }
-
-    resultEl.innerHTML = html;
-  }
 
   // ═══════════════ 用量统计页 ═══════════════
 
