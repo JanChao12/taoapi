@@ -165,30 +165,30 @@ func runServeMode(args []string, rt *guiRuntime) int {
 		rt.logsDir = datadir.LogsDir()
 	}
 
-	// ── 一次性数据迁移（老位置 → exe 同目录）──
+	// ── 数据迁移（2026-10-09 起**不再自动执行**）──
 	//
-	// 2026-10-07：数据目录改为 exe 同目录（照 wild-work 布局）。
-	// 老用户的数据在 `%USERPROFILE%\.wbapi`，首次在新位置启动时搬过来。
+	// 🔴 委托方 2026-10-09 明确要求：「程序在空目录首次运行会从
+	//	%USERPROFILE%\.wbapi 自动迁移数据，这个删掉。」
 	//
-	// 🔴 迁移是**复制**而不是移动、且**不覆盖**目标已有文件、
-	//	**不解析 JSON**（见 datadir.Migrate 的安全原则）——
-	//	动的是唯一凭据副本，任何"聪明"的处理都可能丢号。
-	if res := datadir.Migrate(); res.Performed {
-		logger.Printf("首次启动：已从旧目录迁移数据 %s → %s", res.From, res.To)
-		if len(res.Moved) > 0 {
-			logger.Printf("  已迁移 %d 个文件：%v", len(res.Moved), res.Moved)
-		}
-		if len(res.Skipped) > 0 {
-			// 跳过而不是覆盖：目标已有更新的数据
-			logger.Printf("  跳过 %d 个已存在的文件（未覆盖）：%v",
-				len(res.Skipped), res.Skipped)
-		}
-		for _, e := range res.Errors {
-			logger.Printf("  ⚠️ 迁移失败: %s", e)
-		}
-		// 旧目录保留不删 —— 迁移出问题时用户还有原始数据
-		logger.Printf("  旧目录已保留（未删除）：%s", res.From)
-	}
+	// 为什么删（这是**产品决策**，不要"好心"加回去）：
+	//
+	//	自动迁移意味着"程序会去翻用户主目录里的其他位置，并把凭据
+	//	复制到当前目录"。对一个要发布给别人用的程序，这是**不该有的
+	//	副作用** —— 用户只是想在某个文件夹里跑一下，程序却悄悄动了
+	//	他主目录下的东西。即便只是复制（不改源），也超出了用户点
+	//	"运行"时给出的授权范围。
+	//
+	//	⚠️ 另外它会导致一个反直觉现象：在"全新的空目录"里首次运行，
+	//	   `auths/accounts.json` 会**立刻出现并含真实账号** —— 与
+	//	   "这是个干净的新环境"的直觉相反（发布前实测踩到）。
+	//
+	// 现在行为：数据目录 = exe 同目录（或 WBAPI_DATA_DIR），
+	//	**只使用该目录，绝不读写主目录里的旧位置**。
+	//	空目录就是空目录：没有账号，用户自己去面板登录。
+	//
+	// ⚠️ 保留 `datadir.LegacyRoot()` 与 `datadir.Migrate()` 的实现与测试：
+	//	老用户若确实想搬数据，可以显式调用（见 docs/维护备忘.md）。
+	//	只是**不再在启动路径上自动触发**。
 
 	// ── 清理上次崩溃残留的登录临时 profile ──
 	//
