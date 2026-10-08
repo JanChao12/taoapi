@@ -173,15 +173,27 @@ var manager struct {
 
 // StartBrowser 启动一个受控浏览器并等待其 CDP 端口就绪。
 //
-// 调用方**必须**在结束时调用返回值的 Close（或用 defer），
-// 否则会留下临时 profile 与浏览器进程。
+// 调用方结束时的收尾方式有两种，**按产品需求选**：
+//   - Close()  —— 关浏览器 + 删临时 profile（"用完即毁"）
+//   - Detach() —— 只停止监听，保留窗口（用户能看结果，见 login.LoginFor）
+//
+// 🔴 无论用哪种，都**必须**在结束时调用其中之一 —— 否则互斥位不会释放，
+// 下次登录会被 ErrLoginBusy 永久挡住。
 func StartBrowser(opts LoginOptions) (*BrowserSession, error) {
 	kind, exe, err := FindBrowser()
 	if err != nil {
 		return nil, err
 	}
 
-	// 登录互斥：先占位，失败再放掉。
+	// ⚠️ 这里**刻意不做** profile 清理。
+	//
+	//	Detach 路径会保留上一个登录窗口（用户可能还开着看结果）。
+	//	若在此处调 CleanupStaleProfiles，它会去删那个**仍在运行**的
+	//	浏览器的 profile —— 而 os.RemoveAll 会"删掉能删的"，
+	//	于是那个窗口的 profile 被删掉一半，可能导致浏览器异常。
+	//	⇒ profile 清理改由两条**精确**路径负责：
+	//	  ① Detach 时挂一个 goroutine，等浏览器**真的退出**后再删
+	//	  ② 进程启动时清崩溃残留（见 app 层）
 	manager.mu.Lock()
 	if manager.current != nil {
 		manager.mu.Unlock()
@@ -340,6 +352,63 @@ func (s *BrowserSession) portIsLoopback() bool {
 // CDPBaseURL 返回调试端点的基地址（固定回环）。
 func (s *BrowserSession) CDPBaseURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d", s.port)
+}
+
+// Detach 停止跟踪本次会话，但**不关闭浏览器、不删 profile**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 为什么要这个（2026-10-08 委托人需求 2）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	委托人原话：「我每次登录后还没看到是否登录成功的反馈，
+//	            你就直接把窗口关了」
+//
+//	⇒ 登录结束（无论成功还是失败）后**保留窗口**，让用户自己看到结果、
+//	  自己关。程序只做"停止监听"，不再 kill 进程、不删 profile。
+//
+// 🔴 与 Close 的关键区别（别把两者混用）：
+//
+//	Close   = 结束浏览器进程树 + 删临时 profile（原行为，"用完即毁"）
+//	Detach  = 只释放互斥位与跟踪，浏览器与 profile **原样保留**
+//
+//	Detach 之后，本次会话的 profile 目录**不会**被立刻清理 ——
+//	程序会挂一个后台 goroutine 等**浏览器真的退出**后再删。
+//
+//	为什么不在 Detach 当场删：此刻浏览器**仍在运行**、profile 被它锁着。
+//	os.RemoveAll 会"删掉能删的"，造成那个窗口的 profile 残缺 ——
+//	可能让浏览器崩或行为异常。所以必须等它自然退出。
+func (s *BrowserSession) Detach() {
+	s.closeOnce.Do(func() {
+		close(s.closed)
+
+		// ⚠️ 刻意**不做** s.cmd.Process.Kill()：浏览器继续运行，
+		//	用户可以查看登录结果并自己关闭窗口。
+
+		// 释放互斥位 —— 否则下次登录会被"已有一个登录流程在进行中"永久挡住。
+		manager.mu.Lock()
+		if manager.current == s {
+			manager.current = nil
+		}
+		manager.mu.Unlock()
+
+		// 后台等浏览器退出，然后清理它的临时 profile。
+		//
+		// 这是"保留窗口"与"不堆积垃圾"之间的折中：
+		//   - 用户看结果期间：profile 完好（浏览器正常）
+		//   - 用户关掉窗口后：profile 被自动删掉，不占磁盘
+		//
+		// ⚠️ 不设超时：一个登录窗口开一整天也该由用户决定何时关。
+		//	进程若一直不退，profile 就一直留着 —— 那是正确行为，
+		//	因为强行删会破坏运行中的浏览器。崩溃残留由启动时的
+		//	CleanupStaleProfiles 兜底。
+		if s.cmd != nil && s.cmd.Process != nil {
+			go func(cmd *exec.Cmd, profile string) {
+				_ = cmd.Wait() // 等浏览器进程真正退出
+				// 删不掉也无妨：启动时的清理会再试一次。
+				_ = removeOwnProfile(profile)
+			}(s.cmd, s.profile)
+		}
+	})
 }
 
 // Close 关闭浏览器并清理临时 profile。

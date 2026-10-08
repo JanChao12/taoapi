@@ -239,8 +239,19 @@ func LoginFor(
 		report(PhaseFailed)
 		return Result{Phase: PhaseFailed, Err: err}
 	}
-	// 无论如何都要收尾：关浏览器 + 删 profile。
-	defer sess.Close()
+
+	// 🔴 结束时不关窗口（2026-10-08 委托人需求 2）。
+	//
+	//	委托人原话：「我每次登录后还没看到是否登录成功的反馈，
+	//	            你就直接把窗口关了」
+	//
+	//	⇒ 无论成功/失败/取消，都只 **Detach**（停止监听、释放互斥位），
+	//	  **保留浏览器窗口**让用户看到结果并自己关。
+	//
+	//	⚠️ 这不是"永不清理"：profile 会在**下次登录启动前**
+	//	  由 CleanupStaleProfiles() 清掉（见 StartBrowser 内部调用）。
+	//	  所以反复登录不会在 Temp 里无限堆积。
+	defer sess.Detach()
 
 	// ── 3. 连接 CDP 并开启监听（必须在导航稳定前就绪）──
 	creds, err := captureCredentials(sess, platform, state, timeout, report, cancel)

@@ -27,6 +27,7 @@ import (
 	"workbuddy.local/workbuddy-api/internal/autostart"
 	"workbuddy.local/workbuddy-api/internal/config"
 	"workbuddy.local/workbuddy-api/internal/datadir"
+	"workbuddy.local/workbuddy-api/internal/login"
 	"workbuddy.local/workbuddy-api/internal/provider"
 	"workbuddy.local/workbuddy-api/internal/provider/workbuddy"
 	"workbuddy.local/workbuddy-api/internal/router"
@@ -189,8 +190,22 @@ func runServeMode(args []string, rt *guiRuntime) int {
 		logger.Printf("  旧目录已保留（未删除）：%s", res.From)
 	}
 
-	// ── 开机自启自愈：exe 被移动/改名后修正注册表里的过期路径 ──
+	// ── 清理上次崩溃残留的登录临时 profile ──
 	//
+	// 登录窗口现在由**用户自己关**（委托人需求 2：要能看到登录结果）。
+	// 正常路径下 profile 会在浏览器退出后自动删除（见 BrowserSession.Detach）；
+	// 但如果进程被强杀、或删除时文件仍被占用，就会留下残留目录。
+	// 这里在启动时兜底清一次。
+	//
+	// ⚠️ 只在启动时做，不在每次登录前做：登录前清理会撞上
+	//	"用户上一个登录窗口还开着"的情况，删掉它正在用的 profile。
+	if n, cerr := login.CleanupStaleProfiles(); n > 0 {
+		logger.Printf("已清理 %d 个残留的登录临时目录", n)
+	} else if cerr != nil {
+		logger.Printf("⚠️ 清理登录临时目录失败（不影响服务）: %v", cerr)
+	}
+
+	// ── 开机自启自愈：exe 被移动/改名后修正注册表里的过期路径 ──
 	// 🔴 为什么需要（2026-10-08 委托人提问："文件夹地址换了，自启是不是又失效"）：
 	//
 	//	Run 键里是**写入那一刻的绝对路径快照**，不是跟着 exe 走的引用。
