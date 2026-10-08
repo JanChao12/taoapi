@@ -122,11 +122,85 @@ func (s *restartState) InProgress() bool {
 }
 
 // signal 通知 serve 主循环开始重启（非阻塞，因为状态已由 begin 保证唯一）。
+//
+// 🔴 不要直接调用它 —— 用 requestRestart。
+//
+//	本函数只发信号、不填交接上下文，而 serve 主循环**要求**上下文齐全
+//	（见 serve.go 的 pendingID == "" 分支：宁可放弃重启也不放行）。
+//	单独调用它 = 必然触发出「重启放弃」，这正是 2026-10-09 那个
+//	「点更新 → 程序换了但服务没重启」故障的成因。
+//	保留为小写私有方法，仅供 requestRestart 内部使用。
 func (s *restartState) signal() {
 	select {
 	case s.ch <- struct{}{}:
 	default:
 	}
+}
+
+// requestRestart 是**唯一**允许用来触发重启的入口。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 为什么必须收敛成一个入口（2026-10-09 委托方实测故障）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	故障现象（委托方原话）：
+//	  "我使用后台面板的更新，在我更新后面板未能重启，浏览器刷新也没用，
+//	   我将托盘图标退出，结果打不开了提示端口占用，后台面板也没有更新成功"
+//
+//	根因：`handleUpdateApply` 走的是**更新**路径，却复用了「改端口重启」
+//	的通道，且只调了 signal()、**漏了 setPending()**。于是 serve 主循环
+//	拿到空标识（serve.go: `pendingID == ""`）→ **明确放弃重启** →
+//	调用 recoverAfterFailedRestart 在原地址原地复活。
+//
+//	  实测日志（D:\tools\TAOAPI\data\logs\wbapi-2026-10-09.log）：
+//	    04:31:53 自动更新：已替换程序…准备重启生效
+//	    04:31:53 收到重启请求，正在重新启动…
+//	    04:31:53 重启放弃：未取得本次交接标识；服务保持在原地址
+//	    04:31:53 已恢复到 127.0.0.1:4545 继续服务（重启未生效…）
+//
+//	  ⇒ 更新是 100% 必然失败的：exe 被换掉了，跑着的却还是旧版。
+//	  ⇒ 且失败方式极具误导性：面板说"更新成功"，服务却纹丝不动。
+//
+//	修法（比"在 update 分支补一行 setPending"更结实）：
+//	  把 setPending + begin + signal 绑成一个**原子入口**，
+//	  让"只发信号不填上下文"在结构上不可能再发生。
+//	  —— 与 login.StartBrowser 的闸门同一个思路：护栏放在**危险动作发生点**，
+//	     而不是逐个调用方去补，将来新增调用方自动受保护。
+//
+// ⚠️ 它**立刻发信号**，因此只适用于"调用完就可以开始关闭"的场景；
+//
+//	需要"先把 HTTP 响应写出去、再开始关闭"的场景用 claimRestart（见其注释）。
+//
+// 返回 false 表示已有重启在进行（调用方应返回 409，不要静默丢弃）。
+// addr 传空串时由 serve 主循环回退到当前监听地址（见其兜底分支）。
+func (s *restartState) requestRestart(restartID, origin, newAddr string) bool {
+	if !s.claimRestart(restartID, origin, newAddr) {
+		return false
+	}
+	s.signal()
+	return true
+}
+
+// claimRestart 只做"受理 + 填交接上下文"，**不**发信号。
+//
+// 用途：调用方还需要先写 HTTP 响应（如 202），写完才允许主循环开始关闭 ——
+// 若在这里就发信号，主循环可能抢在响应送达前 Shutdown，客户端拿到的是
+// 连接重置而不是 202。
+//
+// 🔴 调用 claimRestart 之后**必须**调用 signal()，否则这次重启永远不会发生：
+//
+//	状态机已被置为 restartInProgress，而信号没发出 —— 后续所有重启请求
+//	都会得到 409，服务却一直不重启。这正是"半截操作"的新形态。
+//	（故本函数不导出为"随便调"的接口，仅与 signal 成对出现在
+//	 requestRestart / handleRestart 两处，且有测试守着。）
+func (s *restartState) claimRestart(restartID, origin, newAddr string) bool {
+	if !s.begin() {
+		return false
+	}
+	// 🔴 顺序：先填上下文，再（由调用方）发信号。
+	//	反过来会让主循环可能先取到空槽位 —— 明确按"先写后发"来。
+	s.setPending(restartID, origin, newAddr)
+	return true
 }
 
 // restartResponse 是重启接口的响应。
@@ -214,14 +288,16 @@ func handleRestart(deps Deps, w http.ResponseWriter, r *http.Request) {
 
 	// 🔴 重复点击必须给出确定回应（Codex 要求返回 409），
 	// 而不是静默丢弃 —— 否则用户连点几次，完全不知道哪次生效了。
-	if !deps.restart.begin() {
+	//
+	// 用 claimRestart（而不是 requestRestart）：这里必须先写 202 响应，
+	// 写完才能让主循环开始关闭 —— 否则客户端拿到的是连接重置而不是 202。
+	// ⚠️ 拆成 claim + signal 两步时，两步**必须都执行**（见 claimRestart 注释）；
+	//    漏掉 setPending 正是 2026-10-09「更新不重启」故障的成因。
+	if !deps.restart.claimRestart(restartID, clientOrigin, newAddr) {
 		writeError(w, http.StatusConflict, openai.ErrTypeInvalidRequest,
 			"restart_in_progress", "重启已在进行中，请稍候再试")
 		return
 	}
-
-	// 把本次交接的上下文交给 serve 主循环（它负责真正拉起子进程）。
-	deps.restart.setPending(restartID, clientOrigin, newAddr)
 
 	// 202：重启【尚未完成】，只是已受理。
 	// 用 200 会让前端以为此刻服务已就绪，立刻去连新地址而失败。
@@ -237,10 +313,8 @@ func handleRestart(deps Deps, w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 
-	go func() {
-		time.Sleep(300 * time.Millisecond) // 留时间让 202 送达
-		deps.restart.signal()
-	}()
+	// 🔴 响应已送达，现在才允许主循环开始关闭（claim 与 signal 成对，缺一不可）。
+	deps.restart.signal()
 }
 
 // plannedListenAddr 计算重启后将使用的监听地址。

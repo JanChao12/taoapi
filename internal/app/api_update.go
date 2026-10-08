@@ -328,13 +328,90 @@ func handleUpdateApply(deps Deps, w http.ResponseWriter, r *http.Request) {
 	//
 	//	为什么不在本请求里直接 exec：必须先把 200 响应写出去，
 	//	否则面板收不到"更新成功"就要面对连接中断。
-	//	restartState 的 signal 正是"稍后重启"的既有通道。
+	//
+	// ═══════════════════════════════════════════════════════════════════
+	// 🔴🔴 2026-10-09 委托方实测故障 —— 这里曾漏填交接上下文
+	// ═══════════════════════════════════════════════════════════════════
+	//
+	//	原实现只调了 `deps.restart.signal()`，**没有先 setPending**。
+	//	而 serve 主循环要求上下文齐全（serve.go: `pendingID == ""` 分支
+	//	会**放弃重启**并原地恢复）。后果：
+	//
+	//	  · exe 被换成了新版（ReplaceSelf 成功）
+	//	  · 但服务**永不重启**，跑的还是旧进程 —— 等于更新必然失败
+	//	  · 面板却显示"已更新到 x.y.z，服务即将重启以生效"（在骗人）
+	//
+	//	实测日志（D:\tools\TAOAPI\data\logs\wbapi-2026-10-09.log）：
+	//	  04:31:53 自动更新：已替换程序…准备重启生效
+	//	  04:31:53 收到重启请求，正在重新启动…
+	//	  04:31:53 重启放弃：未取得本次交接标识；服务保持在原地址
+	//	  04:31:53 已恢复到 127.0.0.1:4545 继续服务（重启未生效…）
+	//
+	//	委托方现象："更新后面板未能重启…将托盘图标退出后打不开、提示端口占用"
+	//	（端口被那个"原地恢复"出来的旧进程继续占着）。
+	//
+	//	修法：改走 requestRestart —— 它把 begin + setPending + signal
+	//	绑成一次原子调用，结构上不可能再漏。
+	//
+	// ⚠️ 必须提供 restartID：健康握手要求子进程在 /healthz 回显**同一个**
+	//	标识（healthMatches 对空标识**直接判不健康**），没有它父进程将
+	//	永远等不到"本次交接的进程"，15 秒后超时并把刚拉起的新进程杀掉。
+	//
+	// ⚠️ 更新**不改变监听地址**（它只换 exe，不碰配置端口），所以 newAddr
+	//	按当前配置算即可 —— 仍要走 plannedListenAddr 而不是"留空"，
+	//	因为握手探测的就是这个地址。
 	if deps.restart != nil {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			deps.restart.signal()
-		}()
+		restartID, idErr := newRestartID()
+		newAddr, addrErr := plannedListenAddr(deps)
+		switch {
+		case idErr != nil:
+			// 标识生成失败（crypto/rand 异常）：明确记日志。
+			// 程序已经换成新版了，但本进程不会重启 —— 下次手动启动即生效。
+			if deps.Logger != nil {
+				deps.Logger.Printf("⚠️ 更新已替换程序，但生成重启标识失败（%v）；"+
+					"请手动重启以生效", idErr)
+			}
+		case addrErr != nil:
+			if deps.Logger != nil {
+				deps.Logger.Printf("⚠️ 更新已替换程序，但无法确定监听地址（%v）；"+
+					"请手动重启以生效", addrErr)
+			}
+		default:
+			// 🔴 先受理（填上下文），再在写响应之后发信号 —— 与 handleRestart
+			// 同样的顺序理由：不能抢在 200 送达之前开始关闭。
+			if !deps.restart.claimRestart(restartID, clientOrigin(r), newAddr) {
+				if deps.Logger != nil {
+					deps.Logger.Printf("⚠️ 更新已替换程序，但已有重启在进行中；" +
+						"本次不再重复触发")
+				}
+				return
+			}
+			go func() {
+				time.Sleep(500 * time.Millisecond) // 留时间让 200 送达
+				deps.restart.signal()
+			}()
+		}
 	}
+}
+
+// clientOrigin 取面板当前 origin（供重启后的 CORS 白名单使用）。
+//
+// 🔴 为什么从请求头推导而不是新增请求体字段：
+//
+//	`handleUpdateApply` 是 POST + JSON（但不带 body 语义），面板调用它时
+//	浏览器会带上 `Origin` 头。用它即可，**不必**改前端协议
+//	（改协议会让老前端与新后端不兼容，而这是自用工具，不值得）。
+//
+// ⚠️ 该值同样**不被信任**：serve.go 会经 newAllowedOrigins 严格校验
+//
+//	（只接受 http + 回环 host + 合法端口），非法值静默丢弃 —— 白名单宁小勿大。
+//
+// 拿不到就返回空串（子进程白名单只含自己的 origin，不影响重启本身）。
+func clientOrigin(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return r.Header.Get("Origin")
 }
 
 // datadirExeDir 返回当前 exe 所在目录（更新下载的落点）。
