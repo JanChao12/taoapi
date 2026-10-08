@@ -70,6 +70,12 @@ type usageRecorder struct {
 	//	不区分协议的话，排查"是不是某个协议的转换有问题"时无从下手 ——
 	//	usage.Event.Protocol 字段早就存在，只是此前恒为 "chat"。
 	protocol string
+
+	// ttftMS 首字耗时（毫秒）；nil = 没测到（非流式 / 首字前就失败）。
+	//
+	// 见 noteFirstToken 与 usage.Event.TTFTMS 的说明。
+	ttftMS   *int64
+	ttftSeen bool
 }
 
 // newUsageRecorder 开始一次记账（OpenAI Chat 协议）。
@@ -102,6 +108,32 @@ func newUsageRecorderFor(deps Deps, clientModel, upstreamModel string,
 
 // RequestID 暴露给调用方（例如写进响应头便于排查）。
 func (r *usageRecorder) RequestID() string { return r.requestID }
+
+// noteFirstToken 记录首字到达时刻（只在流式路径调用，且只生效一次）。
+//
+// 🔴 为什么由调用方在**写出首个正文事件时**调用，而不是在
+//
+//	recordOK 里靠时间差算（2026-10-09 加首字耗时时定的）：
+//
+//	recordOK 只在请求**结束时**执行，那时已经无从知道"第一个 token
+//	是何时到的"。首字时刻必须在它发生的当下就记下来 ——
+//	事后无法重建。
+//
+// ⚠️ 只认第一次：上游首个事件通常是 role 帧（无正文），
+//
+//	真正的"首字"是第一个带内容的事件。多次调用只取最早那次，
+//	保证语义是"第一次有东西给用户看"。
+func (r *usageRecorder) noteFirstToken() {
+	if r == nil || r.ttftSeen {
+		return
+	}
+	r.ttftSeen = true
+	ms := time.Since(r.start).Milliseconds()
+	if ms < 0 {
+		ms = 0 // 时钟回拨的兜底：宁可记 0 也不写负数
+	}
+	r.ttftMS = &ms
+}
 
 // recordOK 记一次成功的请求。
 //
@@ -169,7 +201,10 @@ func (r *usageRecorder) base() usagepkg.Event {
 		Protocol:   r.protocol,
 		Stream:     r.stream,
 		DurationMS: time.Since(r.start).Milliseconds(),
-		RequestID:  r.requestID,
+		// 首字耗时：nil 表示没测到（非流式、或首字前就失败了）。
+		// ⚠️ 直接传指针（不取值）—— "没测到"与"0ms"必须能区分。
+		TTFTMS:    r.ttftMS,
+		RequestID: r.requestID,
 		// 🔴 记录**真实路由结果**（Codex 第 40 轮建议）。
 		//   有了这两项，聚合时不必再靠注册表回推渠道 ——
 		//   将来接入第二个平台也不会改写历史统计。

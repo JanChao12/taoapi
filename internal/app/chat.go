@@ -219,16 +219,36 @@ func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// writeEvent 包装编码器，顺带在**第一个带内容的事件**到达时记下首字耗时。
+	//
+	// 🔴 为什么在这里记（2026-10-09 加首字耗时）：
+	//
+	//	首字时刻只在它发生的**当下**可知 —— 等流结束再算已经来不及
+	//	（那时无从知道第一个 token 是何时到的）。所以必须在事件路径上采。
+	//
+	// ⚠️ 只认 EventContent / EventReasoning（真正给用户看的内容）：
+	//	上游首个事件通常是 role 帧（只有 role 字段、没有正文），
+	//	把它当"首字"会让首字耗时虚低（几乎为 0），失去意义。
+	//
+	// ⚠️ 思考增量也算"首字"：对思考模型，用户**看得见**思考在流，
+	//	体感上的"开始出字"就是第一个思考分片。
+	writeEvent := func(ev provider.Event) error {
+		if ev.Type == provider.EventContent || ev.Type == provider.EventReasoning {
+			rec.noteFirstToken()
+		}
+		return enc.write(ev)
+	}
+
 	// 首个事件已被 TryChat 从流里取出，必须先写它 ——
 	// 否则会丢掉第一个 token（通常是 role 帧）。
-	if err := enc.write(sess.FirstEvent); err != nil {
+	if err := writeEvent(sess.FirstEvent); err != nil {
 		deps.logf("写入首个事件失败（客户端可能已断开）: %v", err)
 		rec.recordClientDisconnected()
 		return
 	}
 
 	// ── 阶段三：消费剩余事件（此时已无法换号）──
-	streamErr := sess.Rest(enc.write)
+	streamErr := sess.Rest(writeEvent)
 	if streamErr != nil {
 		// 流已经开始，改不了状态码；用协议自己的错误帧告知客户端。
 		//

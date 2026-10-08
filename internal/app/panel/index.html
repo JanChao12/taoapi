@@ -97,7 +97,7 @@
           <div class="card-value" id="s-total">—</div>
         </div>
         <div class="card">
-          <div class="card-label">积分消耗</div>
+          <div class="card-label">积分</div>
           <div class="card-value" id="s-credit">—</div>
         </div>
         <!-- 全局缓存命中率（委托方要求）——
@@ -137,15 +137,16 @@
               <th>时间</th>
               <th>账号</th>
               <th>模型</th>
-              <th class="num">输入</th><th class="num">输出</th>
+              <th class="num">输入</th><th class="num">输出</th><th class="num">合计</th>
               <th class="num">缓存命中率</th>
               <th class="num">积分</th>
               <th class="num">耗时</th>
+              <th>流</th>
               <th>状态</th>
             </tr>
           </thead>
           <tbody id="usage-log-body">
-            <tr><td colspan="9" class="empty">加载中…</td></tr>
+            <tr><td colspan="11" class="empty">加载中…</td></tr>
           </tbody>
         </table>
         <nav class="pager" id="log-pager"></nav>
@@ -160,12 +161,13 @@
               <th>模型</th>
               <th class="num">调用</th><th class="num">输入</th>
               <th class="num">输出</th>
+              <th class="num">合计</th>
               <th class="num">缓存命中率</th>
-              <th class="num">积分消耗</th>
+              <th class="num">积分</th>
             </tr>
           </thead>
           <tbody id="model-body">
-            <tr><td colspan="6" class="empty">加载中…</td></tr>
+            <tr><td colspan="7" class="empty">加载中…</td></tr>
           </tbody>
         </table>
         <nav class="pager" id="model-pager"></nav>
@@ -180,7 +182,7 @@
               <th>账号</th>
               <th class="num">调用</th>
               <th class="num">输入</th><th class="num">输出</th><th class="num">合计</th>
-              <th class="num">缓存命中率</th><th class="num">积分消耗</th>
+              <th class="num">缓存命中率</th><th class="num">积分</th>
             </tr>
           </thead>
           <tbody id="acct-body">

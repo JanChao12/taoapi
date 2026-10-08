@@ -1134,7 +1134,7 @@
     });
 
     if (!info.rows.length) {
-      body.innerHTML = '<tr><td colspan="6" class="empty">暂无数据</td></tr>';
+      body.innerHTML = '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
       return;
     }
 
@@ -1156,6 +1156,10 @@
         + '<td class="num">' + fmtInt(m.requests) + '</td>'
         + '<td class="num">' + fmtNum(m.prompt_tokens) + '</td>'
         + '<td class="num">' + fmtNum(m.completion_tokens) + '</td>'
+        // 合计：委托方 2026-10-09 要求「输入输出后面都加一个合计」。
+        // 直接用后端的 total_tokens（与顶部卡片同口径），不前端相加 ——
+        // 相加会掩盖"上游没给 usage"的差异（那种情况 token 记 0）。
+        + '<td class="num">' + fmtNum(m.total_tokens) + '</td>'
         + '<td class="num">' + hitHtml + '</td>'
         + '<td class="num">' + (m.credits === null || m.credits === undefined ? '—' : Number(m.credits).toFixed(2)) + '</td>'
         + '</tr>';
@@ -1244,7 +1248,7 @@
       renderUsageLog(d || {});
     }).catch(function (e) {
       var body = document.getElementById('usage-log-body');
-      if (body) body.innerHTML = '<tr><td colspan="9" class="empty">加载失败</td></tr>';
+      if (body) body.innerHTML = '<tr><td colspan="11" class="empty">加载失败</td></tr>';
       console.error(e);
     });
   }
@@ -1277,7 +1281,7 @@
     });
 
     if (!info.rows.length) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">暂无调用记录</td></tr>';
+      body.innerHTML = '<tr><td colspan="11" class="empty">暂无调用记录</td></tr>';
       return;
     }
 
@@ -1293,6 +1297,9 @@
       // "没拿到"与"确实是 0"含义不同（见 usage.Event.UsageKnown 的注释）。
       var inTok = e.usage_known ? fmtNum(e.prompt_tokens) : '—';
       var outTok = e.usage_known ? fmtNum(e.completion_tokens) : '—';
+      // 合计：委托方 2026-10-09 要求「输入输出后面都加一个合计」。
+      // 同样受 usage_known 约束 —— 未知时显示 —，不显示 0。
+      var totTok = e.usage_known ? fmtNum(e.total_tokens) : '—';
 
       var rate = e.cache_hit_rate;
       var hitHtml = (rate === null || rate === undefined)
@@ -1302,6 +1309,43 @@
       var creditHtml = (e.credits === null || e.credits === undefined)
         ? '—'
         : Number(e.credits).toFixed(2);
+
+      // 耗时：有首字耗时（TTFT）时拆成「首字 x / 总 y」，
+      // 没有时只显示总耗时。
+      //
+      // 🔴 为什么要拆（委托方 2026-10-09 要求「能不能获取到首字耗时」）：
+      //	总耗时对流式请求意义有限 —— 用户体感的是"多久开始出字"。
+      //	40 秒总耗时 + 0.8 秒首字 与 40 秒 + 20 秒首字，
+      //	是完全不同的体验，只看总数分不出来。
+      //
+      // ⚠️ 首字耗时只对**流式**请求有意义：非流式要收齐才返回，
+      //	首字与总耗时本来就是同一个时刻。后端只在流式路径采集它，
+      //	非流式记录里该字段为 null，这里自然退回只显示总耗时。
+      var durHtml;
+      if (e.ttft_ms === null || e.ttft_ms === undefined) {
+        durHtml = fmtInt(e.duration_ms) + 'ms';
+      } else {
+        durHtml = '<span class="ttft">首字 ' + fmtInt(e.ttft_ms) + 'ms</span>'
+          + '<span class="dur-sep">/</span>'
+          + fmtInt(e.duration_ms) + 'ms';
+      }
+
+      // 流：委托方 2026-10-09 要求显示流信息。
+      // 同时给出吞吐（t/s）—— 那是"流得快不快"最直观的指标。
+      // ⚠️ 吞吐只在**有 token 数与耗时**时才算；否则显示 —（不编造）。
+      var streamHtml;
+      if (e.stream) {
+        var tps = null;
+        if (e.usage_known && e.completion_tokens > 0 && e.duration_ms > 0) {
+          tps = e.completion_tokens / (e.duration_ms / 1000);
+        }
+        streamHtml = '<span class="stream-on">流</span>';
+        if (tps !== null) {
+          streamHtml += '<span class="stream-tps">' + tps.toFixed(0) + ' t/s</span>';
+        }
+      } else {
+        streamHtml = '<span class="stream-off">非流</span>';
+      }
 
       // 状态：成功绿色；客户端断开单独说明（那不是服务故障）；
       // 上游报错红色并把原因放 tooltip。
@@ -1320,9 +1364,11 @@
         + '<td class="mono">' + esc(e.model || '') + '</td>'
         + '<td class="num">' + inTok + '</td>'
         + '<td class="num">' + outTok + '</td>'
+        + '<td class="num">' + totTok + '</td>'
         + '<td class="num">' + hitHtml + '</td>'
         + '<td class="num">' + creditHtml + '</td>'
-        + '<td class="num">' + fmtInt(e.duration_ms) + 'ms</td>'
+        + '<td class="num">' + durHtml + '</td>'
+        + '<td>' + streamHtml + '</td>'
         + '<td>' + stHtml + '</td>'
         + '</tr>';
     }

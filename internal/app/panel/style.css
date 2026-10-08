@@ -226,8 +226,20 @@ body {
 .log-warn { color: #92600a; font-weight: 600; }
 .log-bad  { color: #dc2626; font-weight: 600; }
 
-/* 调用记录表较宽（9 列），窄屏允许横向滚动而不是挤爆布局 */
-#usage-log-table { min-width: 900px; }
+/* 首字耗时（TTFT）与总耗时的区分 ——
+   首字是用户体感的那一项（"多久开始出字"），用主色强调；
+   总耗时用默认灰色，避免两个数字抢注意力。 */
+.ttft     { color: #0b7a6b; font-weight: 600; }
+.dur-sep  { color: #cbd5e1; margin: 0 4px; }
+
+/* 流的标记：流式 / 非流式 + 吞吐（t/s）—— 2026-10-09 委托方要求显示流信息。
+   流式用蓝色（与面板其它"活动"语义一致），非流式用灰（静态）。 */
+.stream-on  { color: #1d4ed8; font-weight: 600; }
+.stream-off { color: #94a3b8; }
+.stream-tps { color: #94a3b8; margin-left: 6px; font-size: 0.9em; }
+
+/* 调用记录表较宽（11 列），窄屏允许横向滚动而不是挤爆布局 */
+#usage-log-table { min-width: 1100px; }
 #usage-log-table td.mono { white-space: nowrap; }
 
 /* 分页条（模型用量 / 账号用量 / 调用记录三个列表共用）——

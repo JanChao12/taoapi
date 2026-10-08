@@ -154,6 +154,21 @@ type accountStat struct {
 	// CacheHitTokens / CacheMissTokens 该账号的缓存命中情况。
 	CacheHitTokens  int64 `json:"cache_hit_tokens"`
 	CacheMissTokens int64 `json:"cache_miss_tokens"`
+
+	// CacheHitRate 该账号的缓存命中率（0~1）；**分母为 0 时为 null**。
+	//
+	// 🔴 为什么必须补这个字段（2026-10-09 委托方实测反馈：
+	//	「账号用量的缓存命中率没有显示」）：
+	//
+	//	此前只给了分子分母两个原始值，**没给算好的比率** ——
+	//	而前端读的是 `a.cache_hit_rate`，于是永远拿到 undefined、
+	//	每行都显示「—」。数据其实一直都在（实测命中 1.09 亿 / 未命中 115 万）。
+	//
+	//	⚠️ 为什么不让前端自己用分子分母算：
+	//	  分母为 0 时前端无法区分「该账号没被调用过」与「调用了但一次没命中」
+	//	  （前者应显示 —，后者应显示 0.0%）。用 null 表达"无样本"才不误导。
+	//	  这与 modelStat.CacheHitRate 的口径**完全一致**，两处不能分叉。
+	CacheHitRate *float64 `json:"cache_hit_rate"`
 }
 
 // lookupAccountByMasked 用**脱敏后的 UID** 反查账号。
@@ -399,6 +414,14 @@ func handleStats(deps Deps, w http.ResponseWriter, r *http.Request) {
 	})
 
 	for _, as := range acctMap {
+		// 账号缓存命中率：与 modelStat 同一口径（分母为 0 时留 nil，不是 0）。
+		//
+		// 🔴 见 accountStat.CacheHitRate 的注释：前端读这个字段，
+		//	不补它每行都显示「—」。
+		if denom := as.CacheHitTokens + as.CacheMissTokens; denom > 0 {
+			rate := float64(as.CacheHitTokens) / float64(denom)
+			as.CacheHitRate = &rate
+		}
 		resp.Accounts = append(resp.Accounts, *as)
 	}
 	sort.Slice(resp.Accounts, func(i, j int) bool {

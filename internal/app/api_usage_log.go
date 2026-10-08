@@ -75,6 +75,15 @@ type usageLogEntry struct {
 	// DurationMS 耗时。
 	DurationMS int64 `json:"duration_ms"`
 
+	// TTFTMS 首字耗时（毫秒）；null = 没测到（非流式 / 首字前就失败）。
+	//
+	// 🔴 2026-10-09 委托方要求「能不能获取到首字耗时」。
+	//
+	// ⚠️ 用指针，语义三种（见 usage.Event.TTFTMS）：
+	//	nil = 不适用或没测到、0 = 确实几乎立刻出字、>0 = 正常测到。
+	//	前端据此决定"只显示总耗时"还是"拆成首字/总耗时"。
+	TTFTMS *int64 `json:"ttft_ms"`
+
 	// Stream 是否流式。
 	Stream bool `json:"stream"`
 
@@ -190,6 +199,7 @@ func buildUsageLogEntry(deps Deps, ev usagepkg.Event) usageLogEntry {
 		Status:           ev.Status,
 		OK:               ev.OK,
 		DurationMS:       ev.DurationMS,
+		TTFTMS:           ev.TTFTMS,
 		Stream:           ev.Stream,
 		UsageKnown:       ev.UsageKnown,
 		PromptTokens:     ev.PromptTokens,
