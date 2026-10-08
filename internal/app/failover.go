@@ -115,6 +115,17 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 	attempted := make(map[string]bool, maxAccountAttempts)
 	var lastErr error
 
+	// alreadyRefreshed 记录本轮**已经尝试过续期**的账号。
+	//
+	// 🔴 为什么必须防重（2026-10-09）：
+	//
+	//	续期失败时账号仍是 auth_expired，若没有这个标记，
+	//	下一轮换号逻辑可能又选中同一个账号（例如只有它可用），
+	//	于是**反复提交同一个 refresh token** —— 而 Codex 第 28 轮警告过，
+	//	那可能触发整个 token family 被撤销，让用户**彻底无法登录**。
+	//	⇒ 宁可这一次请求失败，也不能把用户的凭据搞废。
+	alreadyRefreshed := make(map[string]bool, maxAccountAttempts)
+
 	// 🔴 按**模型所属平台**过滤账号（2026-10-06 接入国际版）。
 	//
 	//	平台从 ctx 取 —— 由 handleChat 在解析模型时判定并注入
@@ -176,6 +187,43 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 			}
 			return sess, nil
 		}
+
+		// ── 按需续期（2026-10-09 凭证保活）──
+		//
+		// 🔴 只有在**判定为鉴权过期**时才试，且**每个请求对每个账号只试一次**。
+		//
+		//	不能把所有 401/403 都当"token 过期"（Codex 第 33 轮明确要求）：
+		//	403 可能是权限/风控问题，续期解决不了，反而白发一个请求
+		//	（而重复提交 refresh token 有触发 token family 撤销的风险）。
+		//	所以这里**复用 classifyFailure 的判定结果**，不自作一套。
+		//
+		// ⚠️ 这里**不需要**检查"流式是否已开始"：probeOnce 只在
+		//	**第一个事件到达前**失败才返回 error；一旦拿到首帧，
+		//	调用方已经写出了 200，根本走不到这条路径
+		//	（见 failover.go 包注释与 TestFailoverAfterStreamStartedIsImpossible）。
+		if alreadyRefreshed[picked.ID] {
+			// 这个账号本轮已经续过期了，不再重复（防死循环）
+		} else if status, _, _ := classifyFailure(err); status == pool.StatusAuthExpired &&
+			refreshAccountOnDemand(deps, deps.Keepalive, picked.ID) {
+			alreadyRefreshed[picked.ID] = true
+			deps.logf("账号 %s 的凭据已自动续期，重试本次请求", auth.MaskUID(picked.ID))
+
+			// 续期成功后用**新凭据**再试一次同一个账号。
+			//
+			// ⚠️ 必须重新取快照：续期是在锁内写进去的，
+			//	原来的 snap 里的 token 已经旧了。
+			if snap2, ok := store.Snapshot(picked.ID); ok {
+				acct2 := &snap2
+				if sess2, err2 := probeOnce(ctx, chatter, acct2, req); err2 == nil {
+					clearAccountFailure(deps, picked.ID, snap2.Rev)
+					deps.logf("账号 %s 续期后重试成功", auth.MaskUID(picked.ID))
+					return sess2, nil
+				} else {
+					err = err2
+				}
+			}
+		}
+
 		lastErr = err
 
 		if !recordAccountFailure(deps, picked.ID, baseRev, err) {

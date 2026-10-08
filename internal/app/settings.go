@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"workbuddy.local/workbuddy-api/internal/config"
 	"workbuddy.local/workbuddy-api/internal/protocol/openai"
@@ -75,6 +76,18 @@ type settingsView struct {
 	AutoStart   bool              `json:"autoStart"`
 	Aliases     map[string]string `json:"aliases"`
 
+	// Keepalive 凭证保活是否启用（**已归一**，前端直接用）。
+	//
+	// 🔴 这里给的是**布尔值**而不是配置里的指针：
+	//	配置里的 nil 表示"用户从没表过态"，语义上等同"开启"。
+	//	前端没必要知道这层区分 —— 它只需要"现在到底跑不跑"。
+	Keepalive bool `json:"keepalive"`
+
+	// KeepaliveRun 保活守护的运行状态（上次检查时间/结果）。
+	//
+	// 为 nil 表示守护未装配（测试或 CLI 场景）。见 keepaliveStatus。
+	KeepaliveRun *keepaliveStatusView `json:"keepaliveRun,omitempty"`
+
 	// ListenAddr 当前实际监听地址（host 恒为 127.0.0.1，不可配）。
 	ListenAddr string `json:"listenAddr"`
 
@@ -132,6 +145,7 @@ type settingsPatch struct {
 	Port        *int               `json:"port"`
 	AutoCheckin *bool              `json:"autoCheckin"`
 	AutoStart   *bool              `json:"autoStart"`
+	Keepalive   *bool              `json:"keepalive"`
 	Aliases     *map[string]string `json:"aliases"`
 
 	// IfRevision 是乐观锁：客户端声明"我基于哪一版改"。
@@ -391,6 +405,7 @@ func (d Deps) settingsView() settingsView {
 		Port:               cur.Port,
 		AutoCheckin:        cur.AutoCheckin,
 		AutoStart:          cur.AutoStart,
+		Keepalive:          keepaliveEnabled(cur.Keepalive),
 		Aliases:            cur.Aliases,
 		ListenAddr:         listenAddrForPort(d, cur.Port),
 		ConfiguredPort:     cur.Port,
@@ -404,6 +419,19 @@ func (d Deps) settingsView() settingsView {
 	}
 	if v.Aliases == nil {
 		v.Aliases = map[string]string{}
+	}
+	// 保活运行状态：只在守护已装配时给（否则前端会显示一个空的"运行中"卡片）。
+	if d.Keepalive != nil {
+		st := d.Keepalive.Status()
+		v.KeepaliveRun = &keepaliveStatusView{
+			Enabled:    st.Enabled,
+			Running:    st.Running,
+			LastResult: st.LastResult,
+			LastError:  st.LastError,
+		}
+		if !st.LastRunAt.IsZero() {
+			v.KeepaliveRun.LastRunAt = st.LastRunAt.Format(time.RFC3339)
+		}
 	}
 	if cur.APIKey != "" {
 		v.APIKeyHint = hintOf(cur.APIKey)
@@ -524,6 +552,12 @@ func handleSettingsPatch(deps Deps, w http.ResponseWriter, r *http.Request) {
 		if patch.AutoStart != nil {
 			s.AutoStart = *patch.AutoStart
 		}
+		if patch.Keepalive != nil {
+			// 显式表态：存**具体值**（不是 nil）。这样用户关掉之后
+			// 不会被"零值跟随默认开启"的规则又打开。
+			v := *patch.Keepalive
+			s.Keepalive = &v
+		}
 		if patch.Aliases != nil {
 			s.Aliases = *patch.Aliases
 		}
@@ -558,7 +592,24 @@ func handleSettingsPatch(deps Deps, w http.ResponseWriter, r *http.Request) {
 		deps.applyAutoCheckin(*patch.AutoCheckin)
 	}
 
+	// 凭证保活开关立即生效。
+	//
+	// ⚠️ 同样必须判 nil —— 与 applyAutoCheckin 踩过的 panic 同类：
+	// 测试或未装配保活守护的场景下该回调为 nil。
+	if patch.Keepalive != nil && deps.applyKeepalive != nil {
+		deps.applyKeepalive(*patch.Keepalive)
+	}
+
 	writeJSON(w, http.StatusOK, deps.settingsView())
+}
+
+// keepaliveStatusView 是保活运行状态的对外视图（**不含任何凭据**）。
+type keepaliveStatusView struct {
+	Enabled    bool   `json:"enabled"`
+	Running    bool   `json:"running"`
+	LastRunAt  string `json:"lastRunAt,omitempty"`
+	LastResult string `json:"lastResult,omitempty"`
+	LastError  string `json:"lastError,omitempty"`
 }
 
 // validateAliases 做别名的语义校验。

@@ -71,6 +71,29 @@ type Deps struct {
 	// 真正的启停由 applyAutoCheckin 驱动。
 	Checkin *checkinDaemon
 
+	// Keepalive 凭证保活守护（可为 nil）。
+	//
+	// 定时检查各账号 access token 是否临近过期并续期，
+	// 让账号**不必重复登录**。见 keepalive.go 的说明与限制。
+	Keepalive *keepaliveDaemon
+
+	// applyKeepalive 在保活开关变化时被调用，使其立即生效。
+	//
+	// 为 nil 时开关仍会保存，只是不即时改变运行中的调度（测试场景）。
+	applyKeepalive func(enabled bool)
+
+	// Update 更新检查/下载的进程内状态机（可为 nil ⇒ 接口返回 503）。
+	//
+	// ⚠️ 这是本项目**最危险**的功能：它把"运行远程字节"变成一次点击。
+	//	设计边界见 api_update.go 文件头（https + 主机白名单 + 强制校验
+	//	SHA256 + 必须用户显式点击，绝无后台静默替换）。
+	Update *updateState
+
+	// Updater 是 GitHub Release 客户端；为 nil 时按需构造。
+	//
+	// 抽成字段**只为测试注入**（生产用 update.NewUpdater()）。
+	Updater updaterClient
+
 	// restart 重启状态机（含通知 channel）。
 	//
 	// 面板改了端口后需要重启才生效，用它触发。
@@ -262,6 +285,28 @@ func newMux(deps Deps) http.Handler {
 	mux.HandleFunc("/api/models/refresh", guardManagementAPI(deps,
 		func(w http.ResponseWriter, r *http.Request) {
 			handlePanelModelsRefresh(deps, w, r)
+		}))
+
+	// ── 版本检查与更新（面板「关于/更新」）──
+	//
+	// 🔴 设计要点（与委托方 2026-10-09 的要求一致）：
+	//   - **没有后台自动更新**：绝不会自己下载替换 exe
+	//   - GET  /api/update       读状态（无副作用）
+	//   - POST /api/update/check 去 GitHub 查最新版（用户点「检测新版本」）
+	//   - POST /api/update/apply 下载+校验+替换+重启（用户点「更新」）
+	//
+	// ⚠️ check 与 apply 都有副作用 ⇒ 必须过 CSRF 防护，
+	//	否则你打开的恶意网页可以诱导本机下载并替换程序。
+	mux.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
+		handleUpdateStatus(deps, w, r)
+	})
+	mux.HandleFunc("/api/update/check", guardManagementAPI(deps,
+		func(w http.ResponseWriter, r *http.Request) {
+			handleUpdateCheck(deps, w, r)
+		}))
+	mux.HandleFunc("/api/update/apply", guardManagementAPI(deps,
+		func(w http.ResponseWriter, r *http.Request) {
+			handleUpdateApply(deps, w, r)
 		}))
 
 	// ── 设置接口（面板「设置」页）──

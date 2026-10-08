@@ -97,6 +97,20 @@ type Settings struct {
 	// AutoStart 是否随系统启动（默认关闭，用户显式开启才写注册表）。
 	AutoStart bool `json:"autoStart"`
 
+	// Keepalive 是否启用凭证保活（token 自动续期）。
+	//
+	// 🔴 用**指针**而不是 bool，为的是区分"用户显式关掉"与"老配置里没这个键"：
+	//
+	//	这个字段是后加的。老用户的 config.json 里没有它，反序列化后
+	//	零值是 false —— 若按 bool 处理，他们升级后保活**默认是关的**，
+	//	而升级前他们从不需要重新登录，行为会**静默倒退**，
+	//	且界面不会提示"你该去开一下"。
+	//
+	//	⇒ nil = 从没表过态 ⇒ 跟随默认（**开启**，见 keepaliveEnabled）
+	//	  false = 用户明确关掉 ⇒ 尊重
+	//	  true = 用户明确开启
+	Keepalive *bool `json:"keepalive,omitempty"`
+
 	// Aliases 模型别名表：客户端模型名 → 真实模型 ID。
 	//
 	// 委托人要求"映射表由用户自己写"，所以默认给空表，绝不内置别名。
@@ -272,6 +286,11 @@ func (v Settings) sameContent(o Settings) bool {
 		v.AutoCheckin != o.AutoCheckin || v.AutoStart != o.AutoStart {
 		return false
 	}
+	// Keepalive 是 *bool：nil 与 false 语义不同（见字段说明），
+	// 所以不能只比取值 —— 必须区分"从没设过"和"显式关掉"。
+	if !sameBoolPtr(v.Keepalive, o.Keepalive) {
+		return false
+	}
 	if len(v.Aliases) != len(o.Aliases) {
 		return false
 	}
@@ -281,6 +300,14 @@ func (v Settings) sameContent(o Settings) bool {
 		}
 	}
 	return true
+}
+
+// sameBoolPtr 比较两个 *bool："同时为 nil"算相等，其余比取值。
+func sameBoolPtr(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // clearCorruptIfWritten 在成功写回一份合法配置后清除损坏标记。

@@ -273,6 +273,12 @@ func runServeMode(args []string, rt *guiRuntime) int {
 	restartSt := newRestartState()
 	deps.restart = restartSt
 
+	// 版本检查与更新。
+	//
+	// 🔴 **没有后台自动更新**：本状态机只是"检查/下载/替换"的记账本，
+	//	每一次动作都由用户在面板上显式点击触发（委托方 2026-10-09 明确要求）。
+	deps.Update = newUpdateState()
+
 	// 本次交接标识：只有在"被父进程以 --restart-id 拉起"时才非空。
 	//
 	// 🔴 形态校验必须做（Codex 要求"缺失、格式错误或不匹配时健康握手失败"）：
@@ -708,7 +714,54 @@ func buildDeps(logger *log.Logger, verbose bool, listenPort int,
 		logger.Printf("自动签到未启用（可在面板「设置」页开启）")
 	}
 
+	// ── 凭证保活（可开关，默认【开启】）──
+	//
+	// 🔴 与自动签到**默认值相反**，理由：
+	//
+	//	签到是"额外的收益动作"，不做也没有损失；而**凭据过期会让
+	//	账号直接不可用**，用户被迫重新登录 —— 那正是委托方要消除的痛点
+	//	（「让账号不用重复登录」）。所以保活默认开启。
+	//
+	// ⚠️ 保活**不改变任何账号的可调度性**，也不清除 auth_expired
+	//	（见维护备忘 §二之一：刷新成功 ≠ chat 可用）。它只换 token。
+	keepalive := newKeepaliveDaemon(deps)
+	deps.Keepalive = keepalive
+	deps.applyKeepalive = func(enabled bool) {
+		if enabled {
+			keepalive.Start()
+		} else {
+			keepalive.Stop()
+		}
+	}
+	deps.onShutdown = append(deps.onShutdown, keepalive.Shutdown)
+	keepalive.MarkReady() // 账号已装配完成
+
+	if keepaliveEnabled(settings.Get().Keepalive) {
+		keepalive.Start()
+		logger.Printf("凭证保活已启用（账号就绪后立即检查，之后每 30 分钟一次；提前 24 小时续期）")
+	} else {
+		logger.Printf("凭证保活未启用（可在面板「设置」页开启；关闭后凭据过期需重新登录）")
+	}
+
 	return deps, nil
+}
+
+// keepaliveEnabled 读保活开关，**零值视为开启**。
+//
+// 🔴 为什么零值要当开启（而不是像 AutoCheckin 那样当关闭）：
+//
+//	Keepalive 是新加的设置字段。老用户的 config.json 里**没有这个键**，
+//	反序列化后是 false。若按 false 处理，升级后老用户的保活**默认是关的**
+//	—— 那与他升级前"从不需要重新登录"的既有体验不一致，
+//	且他不会知道要去开。
+//
+//	⇒ 用指针语义（*bool）表达"用户从没表过态"，此时跟随"默认开启"。
+//	  用户**显式关掉**过就尊重他的选择（存 false）。
+func keepaliveEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
 }
 
 // accountCount 返回账号数（nil 安全）。

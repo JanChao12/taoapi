@@ -89,6 +89,16 @@ type FakeUpstream struct {
 	// "合并两个源"的逻辑（实测踩过：/v3 误拿到 /v2 的样本，
 	// 于是补充模型被判定为"已由 /v3 提供"而不再兜底，测试红）。
 	pathJSON map[string][]byte
+
+	// blockRefresh 让续期端点在响应前阻塞（制造确定性并发窗口）。
+	// 见 SetBlockOnRefresh 的说明。
+	blockRefresh *refreshBlock
+}
+
+// refreshBlock 是"把续期请求卡住"的一对信号。
+type refreshBlock struct {
+	entered chan struct{}
+	release chan struct{}
 }
 
 // SetStatusForPath 让含指定子串的路径返回给定状态码，其余路径正常。
@@ -188,6 +198,44 @@ func (f *FakeUpstream) Requests() []RecordedRequest {
 	return out
 }
 
+// CountPath 返回路径含指定子串的请求数。
+//
+// 用途（2026-10-09 凭证保活）：断言"同账号并发续期只发了一个请求"。
+// 那是防 token family 撤销的关键性质，必须能数得出来。
+func (f *FakeUpstream) CountPath(substr string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.requests {
+		if strings.Contains(r.Path, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+// SetBlockOnRefresh 让续期端点在响应前阻塞，制造**确定性**的并发交错窗口。
+//
+// 参数：
+//
+//	entered —— 请求一进入假上游就 close（测试据此知道"请求已发出"）
+//	release —— 测试 close 它之后请求才继续返回
+//
+// 🔴 为什么需要（2026-10-09）：
+//
+//	要验证"同账号并发续期去重"，必须有**可复现**的交错点。
+//	靠 sleep 猜时序是 flaky 的；把第一个请求真的卡在服务端，
+//	才能确定地测出"第二个调用是等待而不是再发一个"。to
+//
+// ⚠️ 本机无 gcc、`go test -race` 用不了 ⇒ 这提供的是
+//
+//	**受控确定性交错**，不是动态竞争检测。措辞上不得说成"并发已验证"。
+func (f *FakeUpstream) SetBlockOnRefresh(entered, release chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blockRefresh = &refreshBlock{entered: entered, release: release}
+}
+
 // LastRequest 返回最近一次请求。
 func (f *FakeUpstream) LastRequest() (RecordedRequest, bool) {
 	reqs := f.Requests()
@@ -222,6 +270,22 @@ func (f *FakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	// 对 chat 端点执行契约断言
 	if strings.Contains(r.URL.Path, "/chat/completions") {
 		f.assertChatContract(rec)
+	}
+
+	// 续期端点的**确定性阻塞**（见 SetBlockOnRefresh）。
+	//
+	// ⚠️ 必须在写任何响应之前 —— 否则"卡住"就没有意义了。
+	f.mu.Lock()
+	block := f.blockRefresh
+	f.mu.Unlock()
+	if block != nil && strings.Contains(r.URL.Path, "token/refresh") {
+		select {
+		case <-block.entered:
+			// 已经 close 过，避免重复 close panic。
+		default:
+			close(block.entered)
+		}
+		<-block.release
 	}
 
 	if f.StatusCode != 0 {
