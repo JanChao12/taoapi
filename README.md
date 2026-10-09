@@ -34,11 +34,32 @@
 | 额度查询与「最早到期包」调度 | ✅ |
 | Chat 反代（流式 + 非流式） | ✅ |
 | **失败自动换号**（最多 2 个账号） | ✅ |
-| **网页登录**绑定账号（无需官方客户端） | ✅ 面板内扫码/手机号 |
-| 用量统计与报告（按账号昵称区分） | ✅ 面板 + `report` |
+| **网页登录**绑定账号（无需官方客户端） | ✅ 面板内扫码/手机号，登录后保留窗口 |
+| 用量统计与报告（按账号昵称区分，含 TTFT 首字耗时 / 吞吐 / 缓存命中） | ✅ 面板 + `report` |
 | 面板改端口 + 自动重连 | ✅ |
 | **国内版 + 国际版双平台** | ✅ 共 **34** 个模型 |
-| 自动续期（refresh token 换新） | ❌ **尚未接入** —— 凭据失效后需重新登录 |
+| **凭证保活**（refresh token 自动换新） | ✅ 定时 + 按需（chat 遇鉴权过期即续期） |
+| **账号+模型级限流** | ✅ 冷却时间取自上游 429 自述的重置时刻 |
+| **三协议接入** | ✅ OpenAI Chat Completions + **Anthropic Messages** + **OpenAI Responses** |
+| **桌面形态**（双击即用 + 托盘图标 + 开机自启） | ✅ 无黑窗（GUI 子系统） |
+| **检测新版本 + 一键更新**（哈希校验 + 自替换重启） | ✅ 手动触发，无后台静默更新 |
+| 数据目录随 exe（照 wild-work 布局） | ✅ 凭据 DPAPI 加密落盘 |
+
+### 与同类工具相比的差异点
+
+- **零第三方依赖**：`go list -m all` 只有自己 ⇒ 无 vendor、离线可构建、体积小
+- **单 exe 双击即用**：无 Electron / WebView2 / Node 运行时，面板是 `go:embed` 内嵌的
+  手写 HTML/JS（无构建步骤），浏览器外置
+- **内存小**：空闲专用工作集约 **6–12 MB**（完整 RSS ≈ 46 MB 含共享页；
+  同口径下比参考项目 wild-work 更小）
+- **多协议**：同一服务同时暴露 OpenAI / Anthropic / Responses 三种形状，
+  客户端按需选 base_url（Anthropic 地址**不带** `/v1`，SDK 自己追加）
+- **限流按模型记**：一个模型被上游限流不会拖累同账号的其他模型
+  （实测：DeepSeek 被限后切 glm 仍可用），冷却时长取上游自述的重置时刻
+- **调度透明**：按「账号内最早到期的包」选号（不是"N 天临期总量"），
+  面板直接显示"下一个请求会优先选谁"
+- **数据诚实**：模型目录动态拉取，静态兜底表已删除 —— 上游拉取失败就如实少列，
+  不编数据；面板显示的每个数字都来自上游或真实采集
 
 ### 模型（实测 **34** 个）
 
@@ -66,19 +87,34 @@
 
 ## 快速开始
 
+**方式一：下载现成的 exe（推荐，无需 Go 环境）**
+
+到 [Releases](https://github.com/JanChao12/taoapi/releases/latest) 下载 `taoapi.exe`，
+双击即可 —— 无控制台黑窗，托盘图标常驻，数据目录自动建在 exe 同目录。
+
+**方式二：自己构建（需要 Go 1.22+）**
+
 ```powershell
-# 1. 构建（需要 Go 1.22+）
-go build -o taoapi.exe ./cmd/wbapi
-
-# 2. 启动服务（只监听回环）
+go build -trimpath -ldflags "-H=windowsgui" -o taoapi.exe ./cmd/wbapi
 .\taoapi.exe serve
-
-# 3. 打开面板
-#    http://127.0.0.1:8787/panel/
+# 面板：http://127.0.0.1:8787/panel/
 ```
+
+> 带版本号构建：`scripts/build.ps1 -Version x.y.z`（自动做 PE 子系统自检，
+> 漏 `-H=windowsgui` 会在构建阶段就报错，而不是等用户看到黑窗）。
 
 在面板里**网页登录**绑定账号（首次绑定不需要装 CodeBuddy 客户端），
 然后在 DSH 等客户端里把 base URL 指向 `http://127.0.0.1:8787/v1`。
+
+**三种协议的 base_url**（最容易配错的一处）：
+
+| 协议 | base_url | 说明 |
+|---|---|---|
+| OpenAI Chat Completions | `http://127.0.0.1:8787/v1` | SDK 自己追加 `/chat/completions` |
+| Anthropic Messages | `http://127.0.0.1:8787` | **不带 `/v1`** —— SDK 自己追加 `/v1/messages` |
+| OpenAI Responses | `http://127.0.0.1:8787/v1` | SDK 自己追加 `/responses` |
+
+模型 ID 要带**平台前缀**：国内 `workbuddy/deepseek-v4.1-pro`、国际 `workbuddyai/gpt-5.6-luna`。
 
 ### 命令
 
@@ -101,9 +137,11 @@ go build -o taoapi.exe ./cmd/wbapi
 3. **只监听 `127.0.0.1`**（`serve` 拒绝非回环地址）
 
 这三条写成测试断言（`testutil/fake_upstream.go`），不靠代码审查记忆。
-
 另有两条并发约束（`Account` 字段的读写必须走 `Store` 的锁内快照/变更 API），
 详见 [`docs/维护备忘.md`](docs/维护备忘.md) §二之一。
+
+**凭证保活也守住同一条红线**：refresh 请求**只发往 refresh 端点**，绝不超过
+每账号一年约 9~10 次（提前 24 小时才真发请求，其余时候只看本地时间，零网络）。
 
 ---
 
