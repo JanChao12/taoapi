@@ -27,12 +27,14 @@
       <button type="button" class="side-item" data-page="settings"><span class="ico">⚙</span><span>设置</span></button>
     </nav>
 
-    <!-- 左下角状态：运行时间**单独一行**（委托方要求）——
-         原来"运行 8m45s · 渠道 workbuddy, workbuddyai"挤在一行会被折断，
-         渠道名一长就换行到莫名其妙的位置。 -->
+    <!-- 左下角状态：**只显示运行时间**（2026-10-09 委托方要求）。
+         原话：「图10是面板左下角，删除渠道，只保留运行时间要水平居中
+                而不是左对齐」。
+         ⇒ 渠道（workbuddy, workbuddyai）已删除 —— 那两个名字对使用者
+           没有行动价值（改不了、选不了），却会随平台增多而越来越长，
+           把这块挤成两三行。运行时间居中（.foot-uptime 见 style.css）。 -->
     <div class="side-foot">
       <div class="foot-uptime" id="uptimeLine">加载中…</div>
-      <div class="foot-channels" id="serverLine"></div>
     </div>
   </aside>
 
@@ -131,65 +133,84 @@
             <button type="button" class="btn btn-sm" id="btn-refresh-usage-log">刷新</button>
           </div>
         </div>
-        <table class="tbl" id="usage-log-table">
+        <table class="tbl tbl-even" id="usage-log-table">
           <thead>
             <tr>
               <th>时间</th>
               <th>账号</th>
               <th>模型</th>
-              <th class="num">输入</th><th class="num">输出</th><th class="num">合计</th>
-              <th class="num">缓存命中率</th>
-              <th class="num">积分</th>
-              <th class="num">耗时</th>
               <th>流</th>
-              <th>状态</th>
+              <th class="num">Tokens</th>
+              <th class="num">首字</th>
+              <th class="num">耗时</th>
+              <th class="num">积分</th>
             </tr>
           </thead>
           <tbody id="usage-log-body">
-            <tr><td colspan="11" class="empty">加载中…</td></tr>
+            <tr><td colspan="8" class="empty">加载中…</td></tr>
           </tbody>
         </table>
         <nav class="pager" id="log-pager"></nav>
       </section>
 
-      <!-- ② 模型用量 -->
+      <!-- ② 模型用量 —— 左表右图（2026-10-09 委托方要求）。
+           原话：「模型用量和账号用量列表长度都减半，删除输入输出，
+                  仅将合计改名为Tokens，列表右边用来生成图5图6这种可视化」
+           ⇒ 表格列砍到 5 列（模型/调用/Tokens/缓存命中率/积分），
+             右侧腾出的空间给折线图。 -->
       <section class="panel stat-pane hidden" id="pane-model">
         <h2>模型用量</h2>
-        <table class="tbl" id="model-table">
-          <thead>
-            <tr>
-              <th>模型</th>
-              <th class="num">调用</th><th class="num">输入</th>
-              <th class="num">输出</th>
-              <th class="num">合计</th>
-              <th class="num">缓存命中率</th>
-              <th class="num">积分</th>
-            </tr>
-          </thead>
-          <tbody id="model-body">
-            <tr><td colspan="7" class="empty">加载中…</td></tr>
-          </tbody>
-        </table>
-        <nav class="pager" id="model-pager"></nav>
+        <div class="table-chart">
+          <div class="table-chart-tbl">
+            <table class="tbl tbl-even" id="model-table">
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th class="num">调用</th>
+                  <th class="num">Tokens</th>
+                  <th class="num">缓存命中率</th>
+                  <th class="num">积分</th>
+                </tr>
+              </thead>
+              <tbody id="model-body">
+                <tr><td colspan="5" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
+            <nav class="pager" id="model-pager"></nav>
+          </div>
+          <div class="table-chart-fig">
+            <div class="chart-title">Token 用量趋势<span class="chart-unit">单位：亿</span></div>
+            <div class="chart-box" id="model-chart"></div>
+          </div>
+        </div>
       </section>
 
-      <!-- ③ 账号用量 -->
+      <!-- ③ 账号用量 —— 左表右图 -->
       <section class="panel stat-pane hidden" id="pane-acct">
         <h2>账号用量</h2>
-        <table class="tbl" id="acct-table">
-          <thead>
-            <tr>
-              <th>账号</th>
-              <th class="num">调用</th>
-              <th class="num">输入</th><th class="num">输出</th><th class="num">合计</th>
-              <th class="num">缓存命中率</th><th class="num">积分</th>
-            </tr>
-          </thead>
-          <tbody id="acct-body">
-            <tr><td colspan="7" class="empty">加载中…</td></tr>
-          </tbody>
-        </table>
-        <nav class="pager" id="acct-pager"></nav>
+        <div class="table-chart">
+          <div class="table-chart-tbl">
+            <table class="tbl tbl-even" id="acct-table">
+              <thead>
+                <tr>
+                  <th>账号</th>
+                  <th class="num">调用</th>
+                  <th class="num">Tokens</th>
+                  <th class="num">缓存命中率</th>
+                  <th class="num">积分</th>
+                </tr>
+              </thead>
+              <tbody id="acct-body">
+                <tr><td colspan="5" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
+            <nav class="pager" id="acct-pager"></nav>
+          </div>
+          <div class="table-chart-fig">
+            <div class="chart-title">各账号 Token 趋势<span class="chart-unit">单位：亿</span></div>
+            <div class="chart-box" id="acct-chart"></div>
+          </div>
+        </div>
       </section>
     </section>
 
@@ -209,6 +230,62 @@
           <span class="api-label api-label-gap">API Key</span>
           <code class="api-base" id="apiKeyView">—</code>
           <button type="button" class="btn btn-sm" id="btn-copy-key">复制</button>
+        </div>
+
+        <!-- 🔴 明确列出**实际支持**的端点（2026-10-09 委托方要求）。
+             原话：「把支持的协议写这里，其他协议不能用
+                    http://127.0.0.1:4545/v1 吧。」
+             为什么要写死这张表：`/v1` 只是一个前缀，不是"任何 OpenAI/Anthropic
+             端点都能用"。用户拿别的客户端过来试 `/v1/completions`、
+             `/v1/embeddings` 之类会拿到 404，却不知道是"本服务没实现"
+             还是"自己配错了"。把白名单摆在面板上，直接消除这种猜疑。
+             ⚠️ 这张表必须与 server.go 里 mux 的注册**一一对应** ——
+                有测试（TestPanelApiEndpointListMatchesRoutes）守着，别只改一边。 -->
+        <div class="api-endpoints">
+          <div class="api-endpoints-title">支持的端点（其余 <code>/v1/*</code> 路径一律 404）</div>
+          <table class="tbl">
+            <thead>
+              <tr><th>方法</th><th>路径</th><th>协议</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono">POST</td>
+                <td class="mono">/v1/chat/completions</td>
+                <td>OpenAI Chat</td>
+                <td>最常用；DSH / 各类 OpenAI 兼容客户端</td>
+              </tr>
+              <tr>
+                <td class="mono">POST</td>
+                <td class="mono">/v1/messages</td>
+                <td>Anthropic Messages</td>
+                <td>Claude Code / Anthropic SDK，支持流式与工具调用</td>
+              </tr>
+              <tr>
+                <td class="mono">POST</td>
+                <td class="mono">/v1/messages/count_tokens</td>
+                <td>Anthropic</td>
+                <td>token 计数（Anthropic SDK 会主动调用）</td>
+              </tr>
+              <tr>
+                <td class="mono">POST</td>
+                <td class="mono">/v1/responses</td>
+                <td>OpenAI Responses</td>
+                <td>新版 Responses API</td>
+              </tr>
+              <tr>
+                <td class="mono">GET</td>
+                <td class="mono">/v1/models</td>
+                <td>OpenAI</td>
+                <td>列出可用模型</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="hint-text" style="margin-top:8px;">
+            鉴权：<code>/v1/chat/completions</code>、<code>/v1/models</code> 用
+            <code>Authorization: Bearer &lt;API Key&gt;</code>；
+            <code>/v1/messages</code>、<code>/v1/messages/count_tokens</code>、
+            <code>/v1/responses</code> 同时接受 <code>x-api-key</code> 与 <code>Bearer</code>。
+          </div>
         </div>
       </section>
 
@@ -268,15 +345,23 @@
         ⚠️ 配置文件损坏：已回退到默认值，并把原文件重命名为 <code>config.json.corrupt-&lt;时间戳&gt;</code>。请检查后重新设置。
       </div>
 
-      <!-- 顶层一览：把四区的关键状态压成一行，扫一眼就够 -->
+      <!-- 顶层一览：把四区的关键状态压成一行，扫一眼就够。
+           🔴 这里的 id 用 st-ovw- 前缀，**不能**与下面各区里的 st-sum-* 同名
+              （2026-10-09 修）。原来顶层与「自动化」区共用
+              st-sum-auto-checkin / st-sum-keepalive / st-sum-auto-start 三个 id，
+              而 getElementById 只返回**文档里第一个**匹配元素 ——
+              也就是顶层那个。后果：区里那三行「自动签到当前：—」
+              **永远停在「—」**，无论开关怎么变（委托方实测反馈
+              「为什么图3四个状态都是—」的成因之一）。
+              现在两处各有独立 id，settings.js 同时更新两份。 -->
       <section class="panel">
         <h2>当前设置一览</h2>
         <div class="st-line">
           <span class="st-toggle-state" id="st-sum-api-key">接口密钥：—</span>
           <span class="st-toggle-state" id="st-sum-port">监听端口：—</span>
-          <span class="st-toggle-state" id="st-sum-auto-checkin">自动签到当前：—</span>
-          <span class="st-toggle-state" id="st-sum-keepalive">凭证保活当前：—</span>
-          <span class="st-toggle-state" id="st-sum-auto-start">开机自启当前：—</span>
+          <span class="st-toggle-state" id="st-ovw-auto-checkin">自动签到当前：—</span>
+          <span class="st-toggle-state" id="st-ovw-keepalive">凭证保活当前：—</span>
+          <span class="st-toggle-state" id="st-ovw-auto-start">开机自启当前：—</span>
         </div>
       </section>
 
@@ -445,7 +530,6 @@
           <h2>映射表 <span class="count-chip" id="st-alias-count">共 0 条</span></h2>
           <div class="st-head-tags"><span class="st-chip st-chip-now">立即生效</span></div>
         </div>
-
         <div class="tip st-tip st-tip-plain">
           把长模型名映射成短别名，客户端就能用 <code>dsf</code> 代替 <code>workbuddy/deepseek-v4.1-flash</code>。
           <b>只解析一层</b>：别名的目标必须是真实模型，<b>不能指向另一个别名</b> —— 否则会形成循环。
@@ -493,24 +577,13 @@
           <button type="button" class="btn btn-primary" id="btn-st-alias-batch-save">保存映射</button>
         </div>
 
-        <div class="st-collapse">
-          <div class="st-sub-head">
-            <span class="st-sub-title">当前可用模型（只读）</span>
-            <span class="st-head-tags">
-              <span class="hint-text" id="st-model-note"></span>
-              <button type="button" class="btn btn-sm" id="btn-st-toggle-models">查看当前可用模型</button>
-            </span>
-          </div>
-          <div class="st-collapse st-hidden" id="st-model-box">
-            <table class="tbl">
-              <thead><tr><th>模型 ID</th></tr></thead>
-              <tbody id="st-model-body"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- 给「目标模型」输入框做候选提示：只列出真实模型 ID，
-             这样正常操作下不会把目标写成另一个别名（那会形成循环） -->
+        <!-- 🔴 这里原来有一块「当前可用模型（只读）」折叠表（2026-10-09 委托方要求删除）。
+             原话：「图8『当前可用模型（只读）』没用删掉」。
+             为什么它确实是冗余的：同一份模型清单在「API 接入」页已经完整展示
+             （带名称/上下文/最大输出/倍率/思考档位），而这里只有一个光秃秃的
+             ID 列表，信息量严格更少 —— 两处并存只会让人怀疑哪份才是准的。
+             ⚠️ 保留 <datalist id="st-model-options">：它是「目标模型」输入框的
+                候选来源，与上面那块折叠表无关，删掉会让别名填错（指向别名会成环）。 -->
         <datalist id="st-model-options"></datalist>
       </section>
 

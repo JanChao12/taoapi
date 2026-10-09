@@ -31,6 +31,7 @@ import (
 	"workbuddy.local/workbuddy-api/internal/provider"
 	"workbuddy.local/workbuddy-api/internal/provider/workbuddy"
 	"workbuddy.local/workbuddy-api/internal/router"
+	"workbuddy.local/workbuddy-api/internal/update"
 	usagepkg "workbuddy.local/workbuddy-api/internal/usage"
 )
 
@@ -356,6 +357,37 @@ func runServeMode(args []string, rt *guiRuntime) int {
 	if *verbose {
 		logger.Printf("版本 %s；并发上限 %d；上游 %s",
 			Version, MaxConcurrentStreams, UpstreamChatBase)
+	}
+
+	// ── 清理自动更新留下的旧版本 exe（`<exe>.old`）──
+	//
+	// 🔴 为什么需要（2026-10-09 委托方实测提问：
+	//
+	//	「为什么更新后会保留旧版本，这不是垃圾吗」）：
+	//
+	//	自更新走的是**改名交换** —— Windows 下运行中的 exe 不能被覆盖，
+	//	但**可以改名**（只改目录项、不动文件数据）。于是：
+	//	  1. 正在运行的 taoapi.exe → 改名为 taoapi.exe.old
+	//	  2. 下载好的新 exe → 改名为 taoapi.exe
+	//	第 1 步的旧映像在本进程退出前**一直被锁定**（正在运行的就是它），
+	//	所以替换那一刻删不掉，只能交给"下一个进程"去清。
+	//
+	//	`update.CleanupOld()` 本来就是为这件事写的，但它**从来没有被
+	//	调用过** —— 全项目只有它自己的那个测试在调它。结果 .old 永久
+	//	留在用户目录里：既占 12 MB，又让人以为"更新没清干净/版本没换成"。
+	//
+	// ⚠️ 放在**监听成功之后**（而不是更早）是刻意的：
+	//	.old 是当前版本唯一的回滚副本。若端口被占导致本次启动失败，
+	//	用户还需要它。只有"服务确实起来了"才说明新版本是好的，
+	//	这时删掉回滚副本才安全。
+	//
+	// ⚠️ 删不掉不算错误（best-effort）：可能被残留进程占用，
+	//	留给下次启动再试，绝不因此让服务起不来。
+	// ⚠️ 带 pid 的 `.old`（ReplaceSelf 的兜底命名）也一并清，见 CleanupOld。
+	if removed, cerr := update.CleanupOld(); removed != "" {
+		logger.Printf("已清理更新残留的旧版本: %s", removed)
+	} else if cerr != nil {
+		logger.Printf("⚠️ 清理旧版本 exe 失败（不影响服务）: %v", cerr)
 	}
 
 	// ── 信号与托盘退出通道 ──

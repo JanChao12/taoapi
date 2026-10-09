@@ -88,8 +88,46 @@ func newUsageRecorder(deps Deps, clientModel, upstreamModel string,
 }
 
 // newUsageRecorderFor 开始一次记账（可指定协议名）。
+//
+// ⚠️ start 取**此刻**。仅适用于"创建时就是请求起点"的场景；
+// 流式/非流式 chat 路径**必须**用 newUsageRecorderFrom 传入真正的起点
+// （见那里的说明 —— 起点写错会让首字耗时恒为 0ms）。
 func newUsageRecorderFor(deps Deps, clientModel, upstreamModel string,
 	stream bool, account, providerID, protocol string) *usageRecorder {
+	return newUsageRecorderFrom(deps, clientModel, upstreamModel, stream,
+		account, providerID, protocol, time.Now())
+}
+
+// newUsageRecorderFrom 用**调用方指定的起点**建记账器。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 为什么需要它（2026-10-09 委托方实测缺陷：首字全是 0ms）
+// ═══════════════════════════════════════════════════════════════════
+//
+//	原实现里 chat.go 是这样写的：
+//
+//	    sess, err := TryChat(...)                    // ① 阻塞，直到上游首个事件到达
+//	    rec := newUsageRecorderFor(...)              // ② 此刻才开始计时
+//
+//	而 TryChat **内部已经**把上游的首个事件取回来了（它的职责就是
+//	"先确认上游可用，再写 HTTP 200"）。所以 ② 的 start 已经晚于
+//	"首字到达"那个时刻 —— `noteFirstToken()` 量到的只是
+//	「TryChat 返回 → 写首个事件」这几毫秒 ⇒ **恒等于 0ms**。
+//
+//	⚠️ 同一个起点错误还让 **DurationMS 也偏小**：TryChat 里那段
+//	  （选号 + 建连 + 等上游首个事件）被排除在总耗时之外。
+//	  委托方看到的 `480ms` 这类总耗时其实不含上游等待。
+//
+//	修法：把 `time.Now()` 提到 **TryChat 之前**，经本函数传进来。
+//	这样两个指标才真正覆盖"用户等待的完整时间"。
+//
+// 为什么要新开一个函数而不是改 newUsageRecorderFor 的签名：
+//
+//	后者被 20+ 处测试直接调用（它们不关心起点，用"此刻"即可）。
+//	新函数让**生产路径显式传起点**，测试路径保持简洁，
+//	两边的意图都清楚，且不必改一堆无关测试。
+func newUsageRecorderFrom(deps Deps, clientModel, upstreamModel string,
+	stream bool, account, providerID, protocol string, start time.Time) *usageRecorder {
 	if protocol == "" {
 		protocol = "chat"
 	}
@@ -100,7 +138,7 @@ func newUsageRecorderFor(deps Deps, clientModel, upstreamModel string,
 		upstreamModel: upstreamModel,
 		providerID:    providerID,
 		stream:        stream,
-		start:         time.Now(),
+		start:         start,
 		account:       account,
 		protocol:      protocol,
 	}

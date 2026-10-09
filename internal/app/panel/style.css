@@ -265,16 +265,38 @@ body {
 .pg-btn:disabled { opacity: .45; cursor: default; }
 .pg-info { color: #6b7280; }
 
-/* 侧边栏左下角：运行时间与渠道**分两行**（委托方要求）。
-   原来挤一行，渠道名一长就折断到难看的位置。 */
-.side-foot { line-height: 1.7; }
+/* 页码直达输入框（2026-10-09 委托方要求）：
+   「下方分页应该有个框直接输入页数」。
+   宽度按 4 位数留（千页也够），居中显示。 */
+.pg-input {
+  width: 54px;
+  padding: 3px 6px;
+  border: 1px solid #dfe2e7;
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: center;
+  color: #4a5058;
+  font-variant-numeric: tabular-nums;
+}
+.pg-input:focus { outline: none; border-color: #16a34a; }
+.pg-total { color: #6b7280; }
+
+/* 侧边栏左下角：**只有运行时间，且水平居中**（2026-10-09 委托方要求）。
+   原话：「删除渠道，只保留运行时间要水平居中而不是左对齐」。
+   渠道那行已从 HTML 删除（改不了也选不了的名字，没有行动价值）。 */
+.side-foot { line-height: 1.7; text-align: center; }
 .side-foot .foot-uptime { color: #6b7280; }
-.side-foot .foot-channels { color: #9aa1a9; font-size: 11px; word-break: break-all; }
 
 /* 「API 接入」页：地址与密钥**并排**（委托方要求"key 放到接口地址的右边"）——
    两项是配客户端时必须同时填的，并排便于对照。窗口窄时自动换行。 */
 .api-base-row { flex-wrap: wrap; }
 .api-label-gap { margin-left: 18px; }
+
+/* 支持的端点表（2026-10-09 委托方要求把支持的协议写在页面上）。 */
+.api-endpoints { margin-top: 18px; }
+.api-endpoints-title { font-size: 13px; color: #4a5058; margin-bottom: 8px; }
+.api-endpoints .tbl { border: 1px solid #eef0f3; border-radius: 8px; overflow: hidden; }
+.api-endpoints .tbl th { background: #fafbfc; }
 
 /* 通用隐藏类：只控制 .page 的那个不够用（警示条等非页面元素也要能隐藏）。
    用 !important 是刻意的 —— 这些元素可能带 display 的其它规则，
@@ -399,6 +421,40 @@ body {
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl .empty { text-align: center; color: #b0b6bd; padding: 22px; }
 .bar-col { width: 22%; }
+
+/* 等宽列（2026-10-09 委托方要求）：
+   「三个列表都应该像图7每一列之间的间隔距离都一样」。
+   table-layout: fixed 让每列宽度均等 ⇒ 列间隔自然一致；
+   默认的 auto 布局会按内容撑宽（模型 ID 长的列挤掉其它列）。 */
+.tbl-even { table-layout: fixed; }
+.tbl-even th, .tbl-even td { overflow: hidden; text-overflow: ellipsis; }
+
+/* 左表右图（模型用量 / 账号用量）：列表宽度减半，右侧画趋势图。
+   委托方原话：「列表右边用来生成图5图6这种可视化」。 */
+.table-chart { display: flex; gap: 18px; align-items: flex-start; }
+.table-chart-tbl { flex: 1 1 50%; min-width: 0; }
+.table-chart-fig {
+  flex: 1 1 50%;
+  min-width: 0;
+  border: 1px solid #eef0f3;
+  border-radius: 10px;
+  padding: 12px 14px 6px;
+  background: #fff;
+}
+@media (max-width: 980px) {
+  /* 窄屏：图上表下（并排会两边都挤到不可读） */
+  .table-chart { flex-direction: column; }
+  .table-chart-tbl, .table-chart-fig { flex: 1 1 auto; width: 100%; }
+}
+.chart-title { font-size: 13px; color: #4a5058; margin-bottom: 8px; }
+.chart-title .chart-unit { font-size: 11px; color: #a8aeb6; margin-left: 8px; }
+.chart-box { width: 100%; }
+.chart-box svg { display: block; width: 100%; height: auto; }
+.chart-empty { color: #b0b6bd; font-size: 12px; text-align: center; padding: 46px 0; }
+.chart-grid { stroke: #eef0f3; stroke-width: 1; }
+.chart-axis-label { font-size: 10px; fill: #a8aeb6; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 11px; color: #6b7280; }
+.chart-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 

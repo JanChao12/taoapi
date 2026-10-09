@@ -181,35 +181,16 @@
     if (note) setText('st-model-note', note);
   }
 
-  // ── 「当前可用模型」只读下拉（纯展示，从 /v1/models 取）──
-
-  function toggleModelList() {
-    var box = document.getElementById('st-model-box');
-    var btn = document.getElementById('btn-st-toggle-models');
-    if (!box || !btn) return;
-
-    var open = box.classList.toggle('st-hidden') === false;
-    btn.textContent = open ? '收起模型列表' : '查看当前可用模型';
-    if (open) loadModels();
-  }
-
-  function renderModelList() {
-    var body = document.getElementById('st-model-body');
-    if (!body) return;
-
-    if (!modelsState.list.length) {
-      body.innerHTML = '<tr><td class="empty">'
-        + esc(modelsState.loading ? '加载中…' : '暂无模型 —— 先导入账号')
-        + '</td></tr>';
-      return;
-    }
-    var html = '';
-    for (var i = 0; i < modelsState.list.length; i++) {
-      // 这里单元格内容就是模型 ID 文本，不需要按钮
-      html += '<tr><td class="mono">' + esc(modelsState.list[i]) + '</td></tr>';
-    }
-    body.innerHTML = html;
-  }
+  // ── 「当前可用模型」只读下拉伸降已删除（2026-10-09 委托方要求）──
+  //
+  //	原话：「图8『当前可用模型（只读）』没用删掉」。
+  //	同一份模型清单在「API 接入」页已完整展示（带名称/上下文/倍率/档位），
+  //	这里原先只有一个光秃秃的 ID 列表 —— 信息量严格更少，两处并存
+  //	只会让人怀疑哪份准。
+  //
+  //	⚠️ 但 modelsState 与 loadModels() **必须保留**：
+  //	  「目标模型」输入框的 <datalist> 候选就是用它填的（renderModelOptions）。
+  //	  删掉它会让别名只能靠手打，打错成另一个别名会成环（只解析一层）。
 
   // ── 加载 / 渲染 ──
 
@@ -230,7 +211,6 @@
       settingsLoaded = true;
       lastSettings = d || {};
       renderSettings(lastSettings);
-      syncModelList();
     }).catch(function (e) {
       if (seq !== loadSeq) return;   // 过期请求的失败也不必提示
       // 静默：保留上次内容；从未成功过才给一句提示
@@ -257,43 +237,33 @@
     });
   }
 
-  // 模型列表只在展开且已加载时重绘（保证 ID 顺序稳定，不随轮询乱跳）
-  function syncModelList() {
-    var box = document.getElementById('st-model-box');
-    if (box && !box.classList.contains('st-hidden') && modelsState.loaded) renderModelList();
-  }
+  // （syncModelList 已随「当前可用模型」折叠表一起删除。）
 
-  // 后端可能尚未提供自动签到的运行状态字段（契约 §6 要求，但 DTO 里还没有）。
-  // 这里【宽泛取字段名，缺一个都不报错】—— 全缺就显示「—」。
+  // checkinRuntime 读自动签到的运行状态。
+  //
+  // 后端契约（settings.go 的 checkinStatusView）：
+  //   checkinRun: { enabled, running, lastRunAt, lastResult, skippedNoAccounts }
+  //
+  // 🔴 曾经这里是一串"宽泛取字段名"（checkinLastAt / checkin.lastAt /
+  //	checkinLastResult / …），那些名字**后端一个都没有**，且从来没有过，
+  //	所以整行永远是「—」。宽泛回退的害处正在这里：契约不一致被静默吞掉，
+  //	单看前端"没报错"像是正常。现在改成**只认一个形状**，与
+  //	keepaliveRuntime 一致；缺字段就显示「—」（守护未装配时确实没有该对象）。
   function checkinRuntime(d) {
     d = d || {};
-    var raw = (d.checkin && typeof d.checkin === 'object') ? d.checkin : null;
+    var raw = (d.checkinRun && typeof d.checkinRun === 'object') ? d.checkinRun : null;
+    if (!raw) return { at: '—', result: '—' };
 
-    var at = firstOf([
-      d.checkinLastAt, d.checkinLast, d.checkin_last_at,
-      d.lastCheckinAt, d.lastCheckin,
-      raw && raw.lastAt, raw && raw.last_at, raw && raw.at
-    ]);
-    var result = firstOf([
-      d.checkinLastResult, d.checkinResult, d.checkin_last_result, d.lastCheckinResult,
-      raw && raw.lastResult, raw && raw.last_result, raw && raw.result
-    ]);
-    if (result && typeof result === 'object') {
-      result = firstOf([result.message, result.summary, result.text, result.label, result.result]);
-    }
-
+    var result = raw.lastResult || '—';
+    // 顺序要紧：正在跑 > 无账号跳过 > 上次结果。
+    //	"没账号"是最容易被误读成"坏了"的状态，所以显式说出来，
+    //	而不是留一个「—」让用户去猜。
+    if (raw.skippedNoAccounts) result = '未执行（无账号）';
+    if (raw.running) result = '签到中…';
     return {
-      at: fmtTime(at) || '—',
-      result: result ? String(result) : '—'
+      at: fmtTime(raw.lastRunAt) || '—',
+      result: String(result)
     };
-  }
-
-  function firstOf(arr) {
-    for (var i = 0; i < arr.length; i++) {
-      var v = arr[i];
-      if (v !== null && v !== undefined && v !== '') return v;
-    }
-    return null;
   }
 
   // keepaliveRuntime 读凭证保活的运行状态。
@@ -301,8 +271,8 @@
   // 后端契约（settings.go 的 keepaliveStatusView）：
   //   keepaliveRun: { enabled, running, lastRunAt, lastResult, lastError }
   //
-  // ⚠️ 与 checkinRuntime 的"宽泛取字段名"不同：这是**本轮刚定的契约**，
-  //	不存在历史字段名，所以只认一个形状 —— 猜字段名反而会掩盖契约不一致。
+  // ⚠️ 不存在历史字段名，所以只认一个形状 —— 猜字段名反而会掩盖契约不一致
+  //	（checkinRuntime 就是这么死的，见那里的说明）。
   //	缺字段就显示「—」，不报错（守护未装配时确实没有这个对象）。
   function keepaliveRuntime(d) {
     d = d || {};
@@ -426,6 +396,16 @@
     setToggle('st-keepalive', keepalive);
 
     var apiKeyLine = d.apiKeySet === true ? '已设置' : '未设置';
+    // 🔴 顶层一览与「自动化」区**各有独立的 id**（2026-10-09 修）。
+    //
+    //	原来两处共用 st-sum-auto-checkin / st-sum-keepalive / st-sum-auto-start，
+    //	而 getElementById 只返回文档里**第一个**匹配 → setText 永远只更新
+    //	顶层那份，区里那三行停在 HTML 写死的「—」。
+    //	委托方实测反馈「为什么图3四个状态都是—」，这是成因之一。
+    //	现在两份都显式更新。
+    setText('st-ovw-auto-checkin', '自动签到当前：' + (autoCheckin ? '已启用' : '已停用'));
+    setText('st-ovw-keepalive', '凭证保活当前：' + (keepalive ? '已启用' : '已停用'));
+    setText('st-ovw-auto-start', '开机自启当前：' + (autoStart ? '已启用' : '已停用'));
     setText('st-sum-auto-checkin', '自动签到当前：' + (autoCheckin ? '已启用' : '已停用'));
     setText('st-sum-keepalive', '凭证保活当前：' + (keepalive ? '已启用' : '已停用'));
     setText('st-sum-auto-start', '开机自启当前：' + (autoStart ? '已启用' : '已停用'));
@@ -1477,7 +1457,7 @@
     on('btn-st-alias-save', addAlias);
     on('btn-st-alias-cancel', closeAliasForm);
     on('btn-st-alias-batch-save', saveAliases);
-    on('btn-st-toggle-models', toggleModelList);
+    // （btn-st-toggle-models 的绑定已随「当前可用模型」折叠表删除。）
 
     // 映射表两张表都是动态渲染的行，统一用事件委托（只挂一次）
     bindRowActions('st-alias-body');

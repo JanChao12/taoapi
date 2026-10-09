@@ -2,6 +2,8 @@ package app
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,6 +241,110 @@ func TestTTFTNilForNonStream(t *testing.T) {
 	if ev.TTFTMS != nil {
 		t.Errorf("非流式请求的 TTFTMS = %v，期望 nil —— "+
 			"非流式没有「首字」这个语义，不该编造", *ev.TTFTMS)
+	}
+}
+
+// TestRecorderHonoursExplicitStartTime 守：记账器的起点可以被调用方指定。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 这是 2026-10-09 那个「首字全是 0ms」缺陷的**行为侧**护栏。
+// ═══════════════════════════════════════════════════════════════════
+//
+//	缺陷成因：chat.go 原先在 `TryChat` **之后**才构造记账器，
+//	而 TryChat 会阻塞直到上游首个事件到达 ⇒ start 已经晚于首字时刻
+//	⇒ 量出来恒为 0ms（委托方实测反馈「首字为什么全是0ms没有意义」）。
+//
+//	修法：把 time.Now() 提到 TryChat 之前，经 newUsageRecorderFrom
+//	把真正的起点传进来。本测试守住"传进来的起点确实被用上了"——
+//	若实现退回成 `start: time.Now()`（忽略参数），下面的断言立刻红。
+//
+// ⚠️ 为什么必须人为把起点往前推：跟 TestNoteFirstTokenIsIdempotent
+//
+//	同一个道理 —— 若起点与"现在"只差几十微秒，那么"用了传入的起点"
+//	和"用了 time.Now()"算出来的毫秒数都是 0，测试恒绿（假测试）。
+//	把起点推到 3 秒前，两种实现的差别立刻显现。
+func TestRecorderHonoursExplicitStartTime(t *testing.T) {
+	const backdate = 3 * time.Second
+	start := time.Now().Add(-backdate)
+
+	rec := newUsageRecorderFrom(Deps{}, "m", "up", true, "acct", "prov", "chat", start)
+
+	// 起点必须原样被采用
+	if d := time.Since(rec.start); d < backdate {
+		t.Errorf("记账器起点没有采用传入值：距现在 %v，期望 ≥ %v —— "+
+			"说明实现忽略了 start 参数、退回成 time.Now()，"+
+			"那正是「首字恒 0ms」的成因", d, backdate)
+	}
+
+	// 由它算出的首字耗时必须反映那 3 秒，而不是 ~0
+	rec.noteFirstToken()
+	if rec.ttftMS == nil {
+		t.Fatal("noteFirstToken 之后仍是 nil")
+	}
+	if got := *rec.ttftMS; got < backdate.Milliseconds() {
+		t.Errorf("首字耗时 = %dms，期望 ≥ %dms —— 起点没生效，"+
+			"这就是委托方看到的「全是 0ms」", got, backdate.Milliseconds())
+	}
+
+	// 总耗时（DurationMS）同样要覆盖那 3 秒 ——
+	// 同一处起点错误曾经让"总耗时"也漏掉上游等待（偏小）。
+	ev := rec.base()
+	if ev.DurationMS < backdate.Milliseconds() {
+		t.Errorf("总耗时 = %dms，期望 ≥ %dms —— "+
+			"起点必须覆盖 TryChat 里的上游等待，否则耗时统计偏小",
+			ev.DurationMS, backdate.Milliseconds())
+	}
+}
+
+// TestChatStartTimeTakenBeforeTryChat 守：**源码层面**起点必须在
+// TryChat 之前取（结构性护栏，防止将来有人把 reqStart 挪回后面）。
+//
+// 🔴 为什么审源码而不是只靠行为测试：
+//
+//	行为测试（上一条）验证的是"记账器会用传入的起点"，
+//	但**传什么值**是 chat.go 决定的。若有人把
+//	`reqStart := time.Now()` 挪到 TryChat 之后，
+//	记账器依然"正确地"使用它，上一条测试照样绿 —— 而缺陷复活。
+//	所以必须直接盯住 chat.go 里两者的先后顺序。
+//
+// 反向对照：把 reqStart 那行移到 TryChat 之后，本条立刻红。
+func TestChatStartTimeTakenBeforeTryChat(t *testing.T) {
+	src, err := os.ReadFile("chat.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	// 两个函数都要查：流式与非流式各自有 TryChat 调用。
+	for _, fn := range []string{"func streamChat(", "func aggregateChat("} {
+		idx := strings.Index(text, fn)
+		if idx < 0 {
+			t.Fatalf("找不到 %s", fn)
+		}
+		// 取到下一个顶层 func 为止（粗切即可，与项目既有做法一致）
+		rest := text[idx:]
+		if next := strings.Index(rest[1:], "\nfunc "); next >= 0 {
+			rest = rest[:next+1]
+		}
+
+		startAt := strings.Index(rest, "reqStart := time.Now()")
+		tryAt := strings.Index(rest, "TryChat(")
+		if startAt < 0 {
+			t.Errorf("%s 里没有 reqStart := time.Now() —— "+
+				"起点必须显式取在 TryChat 之前，否则首字耗时恒为 0ms", fn)
+			continue
+		}
+		if tryAt < 0 {
+			t.Errorf("%s 里没有 TryChat 调用？", fn)
+			continue
+		}
+		if startAt > tryAt {
+			t.Errorf("🔴 %s 里 reqStart 取在 TryChat **之后**（offset %d > %d）——\n"+
+				"  TryChat 会阻塞到上游首个事件到达，于是：\n"+
+				"    · 首字耗时 = 「TryChat 返回 → 写首帧」≈ 0ms（委托方实测的缺陷）\n"+
+				"    · 总耗时漏掉上游等待，偏小\n"+
+				"  修法：把 reqStart 提到 TryChat 之前。", fn, startAt, tryAt)
+		}
 	}
 }
 

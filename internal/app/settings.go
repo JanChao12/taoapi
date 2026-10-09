@@ -88,6 +88,22 @@ type settingsView struct {
 	// 为 nil 表示守护未装配（测试或 CLI 场景）。见 keepaliveStatus。
 	KeepaliveRun *keepaliveStatusView `json:"keepaliveRun,omitempty"`
 
+	// CheckinRun 签到守护的运行状态（上次触发时间/结果）。
+	//
+	// 🔴 为什么必须由后端给（不是前端自己拼）：
+	//
+	//	面板「自动化」区块的「运行状态」一行要求显示"上次触发/结果"，
+	//	但此前**根本没有这个字段** —— 前端只能去猜字段名
+	//	（checkinLastAt / checkin.lastAt / … 全都不存在），于是永远
+	//	显示「—」。单看前端"没报错、有回退"像是正常，实际整行是死的。
+	//	这与第 56 轮①（keepalive 前后端字段名不一致）是同一类缺陷：
+	//	**前端有回退 = 契约不一致被静默吞掉**。
+	//
+	//	所以这里给一个**唯一权威**的对象，而不是再铺几个平铺字段。
+	//
+	// 为 nil 表示守护未装配（测试或 CLI 场景）。见 checkinStatusView。
+	CheckinRun *checkinStatusView `json:"checkinRun,omitempty"`
+
 	// ListenAddr 当前实际监听地址（host 恒为 127.0.0.1，不可配）。
 	ListenAddr string `json:"listenAddr"`
 
@@ -433,6 +449,24 @@ func (d Deps) settingsView() settingsView {
 			v.KeepaliveRun.LastRunAt = st.LastRunAt.Format(time.RFC3339)
 		}
 	}
+	// 签到运行状态：同样只在守护已装配时给。
+	//
+	// ⚠️ 与保活不同，这里**不读设置里的开关**（AutoCheckin 已由
+	//	上面的 v.AutoCheckin 表达），而是回显守护**自己**记录的状态 ——
+	//	两者可能短暂不一致（刚改完开关、守护还没被 applyAutoCheckin 驱动），
+	//	而这种不一致正是排查时要看到的信息。见 CheckinStatus 的说明。
+	if d.Checkin != nil {
+		st := d.Checkin.Status()
+		v.CheckinRun = &checkinStatusView{
+			Enabled:           st.Enabled,
+			Running:           st.Running,
+			LastResult:        st.LastResult,
+			SkippedNoAccounts: st.SkippedNoAccounts,
+		}
+		if !st.LastRunAt.IsZero() {
+			v.CheckinRun.LastRunAt = st.LastRunAt.Format(time.RFC3339)
+		}
+	}
 	if cur.APIKey != "" {
 		v.APIKeyHint = hintOf(cur.APIKey)
 	}
@@ -610,6 +644,33 @@ type keepaliveStatusView struct {
 	LastRunAt  string `json:"lastRunAt,omitempty"`
 	LastResult string `json:"lastResult,omitempty"`
 	LastError  string `json:"lastError,omitempty"`
+}
+
+// checkinStatusView 是签到运行状态的对外视图（**不含任何凭据**）。
+//
+// 🔴 为什么另立一个类型，而不是直接把 checkin_daemon.go 的 CheckinStatus
+// 塞进 settingsView：
+//
+//	CheckinStatus 是**内部状态对象**（含 time.Time 等 Go 侧表示），
+//	对外视图要显式决定"暴露哪些、以什么形态"—— 直接复用等于把内部
+//	结构变成 HTTP 契约，以后改内部字段会静默改变 API。keepaliveStatusView
+//	也是同样的理由（两者都是 daemon 状态 → 视图 的显式拷贝）。
+//
+// ⚠️ 字段全部是开关/计数/时间，**没有任何凭据**（红 line 2）：
+//
+//	CheckinStatus 本身就不含 token，这里也不得新增任何 credential 字段。
+type checkinStatusView struct {
+	Enabled    bool   `json:"enabled"`
+	Running    bool   `json:"running"`
+	LastRunAt  string `json:"lastRunAt,omitempty"`
+	LastResult string `json:"lastResult,omitempty"`
+
+	// SkippedNoAccounts 上次因"没有账号"而未执行。
+	//
+	// 保留它是因为它能区分两种都显示「—」的情况：守护压根没跑过
+	//（LastRunAt 空）vs 跑了但一个账号都没有（这里为 true）。
+	// 少了它，面板无法解释"为什么一直没结果"。
+	SkippedNoAccounts bool `json:"skippedNoAccounts"`
 }
 
 // validateAliases 做别名的语义校验。

@@ -222,6 +222,14 @@ func TestPanelHasUsageLogTable(t *testing.T) {
 // TestAccountUsageHasTokenAndCreditColumns 守：账号用量表含 token 与积分列。
 //
 // 委托方原话：「账号用量要包括token信息和积分消耗，请求这些没用改成调用」
+//
+// 🔴 2026-10-09 列定义又变了一次（委托方要求列表长度减半）：
+//
+//	原话：「模型用量和账号用量列表长度都减半，删除输入输出，
+//	        仅将合计改名为Tokens」。
+//	⇒ 「输入」「输出」两列删除，「合计」改名「Tokens」。
+//	本测试同步为**新契约**，并反向断言旧列名不许回来 ——
+//	否则"删了列但测试还认旧列名"会让测试变成假绿。
 func TestAccountUsageHasTokenAndCreditColumns(t *testing.T) {
 	resp, err := http.Get(panelServerURL(t) + "/panel/")
 	if err != nil {
@@ -231,8 +239,8 @@ func TestAccountUsageHasTokenAndCreditColumns(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	html := stripHTMLComments(string(raw))
 
-	// 表头必须有这些列
-	for _, col := range []string{"调用", "输入", "输出", "合计", "缓存命中率", "积分"} {
+	// 表头必须有这些列（2026-10-09 新契约）
+	for _, col := range []string{"调用", "Tokens", "缓存命中率", "积分"} {
 		if !strings.Contains(html, ">"+col+"<") {
 			t.Errorf("账号用量表缺少「%s」列", col)
 		}
@@ -240,5 +248,13 @@ func TestAccountUsageHasTokenAndCreditColumns(t *testing.T) {
 	// 旧的「请求」列名应已改掉
 	if strings.Contains(html, ">请求<") {
 		t.Error("账号用量表仍用「请求」做列名 —— 委托方要求改成「调用」")
+	}
+	// 🔴 反向断言：被明确删除的列名不许再出现。
+	//	「输入」「输出」在账号用量表里已按委托方要求删除。
+	for _, gone := range []string{">输入<", ">输出<", ">合计<"} {
+		if strings.Contains(html, gone) {
+			t.Errorf("账号用量表仍有已删除的列 %s —— 委托方 2026-10-09 "+
+				"要求删除输入/输出并把合计改名为 Tokens", gone)
+		}
 	}
 }

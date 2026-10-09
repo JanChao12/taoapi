@@ -1,13 +1,16 @@
 package app
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"workbuddy.local/workbuddy-api/internal/config"
 	usagepkg "workbuddy.local/workbuddy-api/internal/usage"
 )
 
@@ -180,6 +183,120 @@ func TestPanelKeepaliveToggleWired(t *testing.T) {
 	for _, want := range []string{"st-keepalive", "keepalive", "keepaliveRuntime"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("settings.js 缺少 %q", want)
+		}
+	}
+}
+
+// TestPanelCheckinRuntimeContract 守签到「运行状态」一行的前后端契约。
+//
+// 🔴 守的是一条**真实且持续了很久**的缺陷（2026-10-09 发现）：
+//
+//	settings.js 的 checkinRuntime 一直在"宽泛猜字段名"
+//	（checkinLastAt / checkin.lastAt / checkinLastResult / …），
+//	而后端 settingsView **一个都没有**、也从来没有过 ⇒ 那一行
+//	的「上次触发/结果」永远是「—」，而且前端因为有回退**不报错**。
+//	这与第 56 轮①（keepalive 前后端字段名不一致）是同型缺陷。
+//
+// 断言的是"名字三处必须同名"（HTTP 契约两侧）：
+//   - 后端 settingsView 的 json tag：checkinRun
+//   - 前端读取的对象名：d.checkinRun
+//   - 对象内部字段：lastRunAt / lastResult / skippedNoAccounts
+//
+// ⚠️ 必须**先剥注释**再断言：本文件里 checkinRuntime 的注释**故意**
+//
+//	写下了那些已废弃的旧字段名（解释"为什么不再猜字段名"），
+//	全文匹配会把注释误判成"代码里还在猜"。
+func TestPanelCheckinRuntimeContract(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "settings.js"))
+	html := panelAsset(t, "index.html")
+
+	// HTML：这一行的三个状态位必须在
+	for _, want := range []string{"st-checkin-state", "st-checkin-at", "st-checkin-result"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html 缺少 %q", want)
+		}
+	}
+
+	// JS：只认 checkinRun 这**一个**权威契约
+	if !strings.Contains(js, "d.checkinRun") {
+		t.Error("settings.js 没有读 d.checkinRun —— " +
+			"后端已给出权威字段，前端却仍在猜字段名")
+	}
+	for _, want := range []string{"lastRunAt", "lastResult", "skippedNoAccounts"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("settings.js 没有读 checkinRun 的 %q（契约字段对不上）", want)
+		}
+	}
+
+	// 🔴 反向断言：那几个"猜出来的"字段名**不许**再出现在代码里。
+	//	它们从来不存在，留着只会让下一次契约变更继续被静默吞掉。
+	for _, bad := range []string{
+		"checkinLastAt", "checkinLastResult", "checkin_last_at",
+		"lastCheckinAt", "firstOf(",
+	} {
+		if strings.Contains(js, bad) {
+			t.Errorf("settings.js 的代码里仍有已废弃的猜测字段 %q —— "+
+				"这会让前后端字段名不一致重新变成静默失败", bad)
+		}
+	}
+}
+
+// TestSettingsViewCheckinRunNilWhenNotAssembled 守"未装配时字段省略"。
+//
+// Deps.Checkin 为 nil（测试/CLI）时必须**不出现** checkinRun 键 ——
+// 否则前端会拿到一个全零对象，把"守护没装配"显示成"已停用/从未触发"，
+// 又是一次"界面在骗人"。
+func TestSettingsViewCheckinRunNilWhenNotAssembled(t *testing.T) {
+	store, err := config.Load(filepath.Join(testConfigDir(t), "config.json"))
+	if err != nil {
+		t.Fatalf("加载测试设置失败: %v", err)
+	}
+
+	// 未装配：Checkin == nil
+	raw, err := json.Marshal(Deps{Settings: store}.settingsView())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "checkinRun") {
+		t.Errorf("未装配签到守护时响应里不该有 checkinRun: %s", raw)
+	}
+
+	// 已装配：必须给出对象，且字段是契约里的那几个（且**不含凭据**）
+	deps := Deps{Settings: store}
+	daemon, _ := newCheckinDaemon(deps)
+	deps.Checkin = daemon
+
+	raw, err = json.Marshal(deps.settingsView())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := got["checkinRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("已装配时缺少 checkinRun 对象: %s", raw)
+	}
+	for _, want := range []string{"enabled", "running", "skippedNoAccounts"} {
+		if _, has := obj[want]; !has {
+			t.Errorf("checkinRun 缺少字段 %q: %s", want, raw)
+		}
+	}
+	// 🔴 反向护栏：**这个对象**绝不能出现任何凭据字段。
+	//	（它来自 CheckinStatus —— 只有计数/时间，本就不该有 token。）
+	//
+	//	⚠️ 只序列化 checkinRun 自己：整个 settingsView 里本就有
+	//	revisionToken（那是**并发令牌**，不是凭据），对它做子串匹配
+	//	会把合法的 revisionToken 误判成泄露。
+	objRaw, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"token", "Token", "cookie", "Cookie", "authorization"} {
+		if strings.Contains(string(objRaw), bad) {
+			t.Errorf("checkinRun 里出现了疑似凭据字段 %q —— "+
+				"设置接口不得泄露上游 token: %s", bad, objRaw)
 		}
 	}
 }

@@ -12,12 +12,34 @@
 
   // ── 格式化 ──
 
-  // 大数字转易读：12345 → 1.23w，1234567 → 123.5w
+  // fmtNum 把大数字转成中文易读单位：12345 → 1.23万，123456789 → 1.23亿。
+  //
+  // 🔴 单位用「万 / 亿」而不是「w」（2026-10-09 委托方要求）。
+  //	原话：「计数单位将"w"改为"万"，并加入单位"亿"」。
+  //	w 是英文习惯，中文界面上「万」才是直觉单位；到亿级还继续用
+  //	「12345.6万」会让人得自己心算，直接用「1.23亿」一眼可读。
+  //
+  // ⚠️ 进制是 **10000**（不是 1000）：1 亿 = 10000 万。
+  //	阈值取 1 亿（1e8）而不是 1000 万 —— 让 9999 万仍以「万」显示，
+  //	避免 0.99 亿这种不如「9999万」直观的写法。
   function fmtNum(n) {
     if (n === null || n === undefined) return '—';
     if (n === 0) return '0';
-    if (n < 10000) return String(n);
-    return (n / 10000).toFixed(n < 1000000 ? 2 : 1) + 'w';
+    var abs = Math.abs(n);
+    if (abs < 10000) return String(n);
+    if (abs < 100000000) return (n / 10000).toFixed(abs < 1000000 ? 2 : 1) + '万';
+    return (n / 100000000).toFixed(2) + '亿';
+  }
+
+  // fmtNumExact 输出**完整数字 + 千分位**，不做单位缩写。
+  //
+  // 🔴 用途：调用记录里的 Tokens 列（2026-10-09 委托方明确要求
+  //	「记得显示纯数字，120000而不是12w」）。
+  //	汇总表要的是"量级"，明细表要的是"准确值" —— 用户拿明细记录
+  //	对账时，"12万"没法核对，120000 才能。
+  function fmtNumExact(n) {
+    if (n === null || n === undefined) return '—';
+    return Number(n).toLocaleString('en-US');
   }
 
   function fmtInt(n) {
@@ -146,18 +168,19 @@
 
   function loadStatus() {
     fetchJSON('/status').then(function (d) {
-      setText('ver', d.version ? 'v' + d.version : '');
-      var prov = (d.providers || []).join(', ') || '未配置';
-      // 🔴 运行时间与渠道**分成两行**（2026-10-06 委托方要求。
-      //	原来"运行 8m45s · 渠道 workbuddy, workbuddyai"挤一行，
-      //	渠道名一长就折断到莫名其妙的位置）。
+      // 版本号：去掉构建后缀（如 "0.1.10-taoapi" → "0.1.10"）。
+      //
+      // 🔴 委托方 2026-10-09 要求：「左上角显示了 v0.1.10 就够了，
+      //	不需要后面的"-taoapi"」。那个后缀是构建时 -ldflags 注入的
+      //	完整版本串，对用户没有意义（不是"两个版本"的区别），
+      //	只让侧边栏那行变长。保留主版本号即可。
+      setText('ver', d.version ? 'v' + String(d.version).split('-')[0] : '');
+      // 左下角只显示运行时间（渠道那行已按委托方要求删除）。
       setText('uptimeLine', '运行 ' + (d.uptime || '—'));
-      setText('serverLine', '渠道 ' + prov);
       statusLoaded = true;
     }).catch(function (e) {
       if (!statusLoaded) {
         setText('uptimeLine', '无法连接服务');
-        setText('serverLine', '');
       }
       console.error(e);
     });
@@ -989,6 +1012,10 @@
   // renderPagerInto 渲染分页条。
   //
   // 🔴 只在需要时显示：一页装得下就不显示分页条（那是噪音）。
+  //
+  // 2026-10-09 委托方要求「下方分页应该有个框直接输入页数」 ——
+  // 于是中间那个静态文字「第 1 / 7 页」改成**可输入的页码框**：
+  // 输入页码回车即跳转。7 页时翻页还忍得了，几百页时只能靠输入。
   function renderPagerInto(elId, info, onGo) {
     var el = document.getElementById(elId);
     if (!el) return;
@@ -1002,12 +1029,16 @@
     var html = '';
     html += '<button type="button" class="pg-btn" data-pg="' + (info.page - 1) + '"' +
       (info.page <= 1 ? ' disabled' : '') + '>上一页</button>';
-    html += '<span class="pg-info">第 ' + info.page + ' / ' + info.pages +
-      ' 页（共 ' + info.total + ' 条）</span>';
+    html += '<span class="pg-jump">第'
+      + '<input type="text" inputmode="numeric" class="pg-input" value="' + info.page + '"'
+      + ' aria-label="跳转到页码" data-pg-input="1">'
+      + '/ <span class="pg-total">' + info.pages + '</span> 页</span>';
+    html += '<span class="pg-info">（共 ' + info.total + ' 条）</span>';
     html += '<button type="button" class="pg-btn" data-pg="' + (info.page + 1) + '"' +
       (info.page >= info.pages ? ' disabled' : '') + '>下一页</button>';
     el.innerHTML = html;
 
+    // 事件只绑一次（元素是复用的，innerHTML 每次重建内容但不重建 el）。
     if (!el.getAttribute('data-bound')) {
       el.setAttribute('data-bound', '1');
       el.addEventListener('click', function (ev) {
@@ -1016,6 +1047,20 @@
         var n = parseInt(btn.getAttribute('data-pg'), 10);
         if (!isNaN(n)) onGo(n);
       });
+      // 输入框：回车跳转；失焦也跳转（用户改完点别处即生效）。
+      // ⚠️ 越界的页码不在这里夹取 —— onGo 会走到 pageSlice，
+      //	那里统一夹到 [1, pages] 并把夹取后的页码写回（单一职责）。
+      var jump = function (ev) {
+        var inp = ev.target;
+        if (!inp || !inp.getAttribute || !inp.getAttribute('data-pg-input')) return;
+        var n = parseInt(inp.value, 10);
+        if (isNaN(n)) { inp.value = info.page; return; }
+        onGo(n);
+      };
+      el.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.keyCode === 13) jump(ev);
+      });
+      el.addEventListener('blur', jump, true);
     }
   }
 
@@ -1109,6 +1154,149 @@
     renderModels(d.models || []);
     renderAcctUsage(d.accounts || []);
     renderHit(t);
+    renderCharts(d.daily || null);
+  }
+
+  // ── 趋势图（纯手写 SVG，零依赖） ──
+  //
+  // 委托方 2026-10-09 要求：模型用量与账号用量列表右边用来生成
+  // 「图5图6这种可视化」—— 即**时间轴上的 Token 用量曲线**。
+  // 为什么不用图表库：本项目硬约束是零第三方依赖（单 exe + go:embed），
+  // 引一个图表库要多几百 KB 且要走一遍依赖评审，而这两张图的需求
+  // （折线 + 网格 + 图例）用原生 SVG 几十行就能画。
+  //
+  // ⚠️ 纵轴单位是**亿**（与面板其它地方的中文单位一致）。
+  var chartColors = [
+    '#c0392b', '#2c3e50', '#3d8ec9', '#e08b3c', '#7d5fb2',
+    '#2e9e6b', '#c2568f', '#8a9099'
+  ];
+
+  function renderCharts(daily) {
+    drawTrend('model-chart', daily, false);
+    drawTrend('acct-chart', daily, true);
+  }
+
+  // drawTrend 画一张趋势图。
+  //
+  //	byAccount=false → 单条总用量曲线（模型用量页）
+  //	byAccount=true  → 每账号一条曲线（账号用量页）
+  function drawTrend(elId, daily, byAccount) {
+    var box = document.getElementById(elId);
+    if (!box) return;
+
+    if (!daily || !daily.dates || !daily.dates.length) {
+      box.innerHTML = '<div class="chart-empty">暂无数据</div>';
+      return;
+    }
+
+    var labels = daily.labels || daily.dates;
+    var n = labels.length;
+
+    // 组装要画的线：[{name, color, values}]
+    var series = [];
+    if (byAccount) {
+      var accts = daily.accounts || [];
+      for (var i = 0; i < accts.length; i++) {
+        series.push({
+          name: accts[i].name || accts[i].account || ('账号' + (i + 1)),
+          color: chartColors[i % chartColors.length],
+          values: accts[i].values || []
+        });
+      }
+    } else {
+      series.push({
+        name: '总 Token',
+        color: chartColors[0],
+        values: daily.total_tokens || []
+      });
+    }
+    if (!series.length) {
+      box.innerHTML = '<div class="chart-empty">暂无数据</div>';
+      return;
+    }
+
+    // 数据要全部为 0 时没有可画的趋势 —— 明确说"暂无"，别画一条贴底的线。
+    var maxV = 0;
+    for (var s = 0; s < series.length; s++) {
+      var vs = series[s].values;
+      for (var k = 0; k < vs.length; k++) {
+        if (Number(vs[k]) > maxV) maxV = Number(vs[k]);
+      }
+    }
+    if (maxV <= 0) {
+      box.innerHTML = '<div class="chart-empty">暂无数据</div>';
+      return;
+    }
+
+    // ── 画布几何 ──
+    // viewBox + width:100% 让它自适应容器宽度（无需监听 resize）。
+    var W = 420, H = 210;
+    var padL = 46, padR = 10, padT = 10, padB = 26;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+
+    // 纵轴刻度：4 条网格线。上界留 8% 余量，避免顶点贴边。
+    var yMax = maxV * 1.08;
+    var xAt = function (i) {
+      return n === 1 ? padL + plotW / 2 : padL + plotW * (i / (n - 1));
+    };
+    var yAt = function (v) {
+      return padT + plotH - (Number(v) / yMax) * plotH;
+    };
+
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Token 用量趋势">';
+
+    // 网格 + 纵轴标签（单位：亿）
+    for (var g = 0; g <= 4; g++) {
+      var val = yMax * (g / 4);
+      var y = yAt(val);
+      svg += '<line class="chart-grid" x1="' + padL + '" y1="' + y.toFixed(1) +
+        '" x2="' + (W - padR) + '" y2="' + y.toFixed(1) + '"/>';
+      // 转成「亿」；小于 0.01 亿的刻度直接写 0（避免 0.00 噪声）
+      var yi = val / 1e8;
+      var yText = yi >= 0.01 ? yi.toFixed(2) : '0';
+      svg += '<text class="chart-axis-label" x="' + (padL - 6) + '" y="' +
+        (y + 3).toFixed(1) + '" text-anchor="end">' + yText + '</text>';
+    }
+
+    // 横轴标签：最多 6 个，等距抽样（点多时全画会糊成一片）
+    var step = Math.max(1, Math.ceil(n / 6));
+    for (var xi = 0; xi < n; xi += step) {
+      svg += '<text class="chart-axis-label" x="' + xAt(xi).toFixed(1) + '" y="' +
+        (H - 8) + '" text-anchor="middle">' + esc(labels[xi]) + '</text>';
+    }
+
+    // 折线（单点时画一个圆点，画不出线）
+    for (var si = 0; si < series.length; si++) {
+      var sr = series[si];
+      var pts = [];
+      for (var pi = 0; pi < n; pi++) {
+        var v = sr.values[pi];
+        pts.push(xAt(pi).toFixed(1) + ',' + yAt(v === undefined ? 0 : v).toFixed(1));
+      }
+      if (n === 1) {
+        svg += '<circle cx="' + xAt(0).toFixed(1) + '" cy="' +
+          yAt(sr.values[0] || 0).toFixed(1) + '" r="2.5" fill="' + sr.color + '"/>';
+      } else {
+        svg += '<polyline fill="none" stroke="' + sr.color +
+          '" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" points="' +
+          pts.join(' ') + '"/>';
+      }
+    }
+    svg += '</svg>';
+
+    // 图例：多账号时才需要（单条线的名字已在标题里）
+    var legend = '';
+    if (byAccount && series.length > 1) {
+      legend = '<div class="chart-legend">';
+      for (var li = 0; li < series.length; li++) {
+        legend += '<span><i style="background:' + series[li].color + '"></i>' +
+          esc(series[li].name) + '</span>';
+      }
+      legend += '</div>';
+    }
+
+    box.innerHTML = svg + legend;
   }
 
   // renderModels 渲染模型用量（带分页）。
@@ -1134,7 +1322,7 @@
     });
 
     if (!info.rows.length) {
-      body.innerHTML = '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+      body.innerHTML = '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
       return;
     }
 
@@ -1151,14 +1339,13 @@
       var hitHtml = (rate === null || rate === undefined)
         ? '—'
         : (Number(rate) * 100).toFixed(1) + '%';
+      // 列已按委托方要求砍到 5 列：模型 / 调用 / Tokens / 缓存命中率 / 积分。
+      // 「输入」「输出」两列删除，「合计」改名为「Tokens」（2026-10-09）。
+      // 仍需用后端的 total_tokens（与顶部卡片同口径），不在前端相加 ——
+      // 相加会掩盖"上游没给 usage"的差异（那种情况 token 记 0）。
       html += '<tr>'
-        + '<td class="mono">' + esc(m.model) + '</td>'
+        + '<td class="mono" title="' + esc(m.model) + '">' + esc(m.model) + '</td>'
         + '<td class="num">' + fmtInt(m.requests) + '</td>'
-        + '<td class="num">' + fmtNum(m.prompt_tokens) + '</td>'
-        + '<td class="num">' + fmtNum(m.completion_tokens) + '</td>'
-        // 合计：委托方 2026-10-09 要求「输入输出后面都加一个合计」。
-        // 直接用后端的 total_tokens（与顶部卡片同口径），不前端相加 ——
-        // 相加会掩盖"上游没给 usage"的差异（那种情况 token 记 0）。
         + '<td class="num">' + fmtNum(m.total_tokens) + '</td>'
         + '<td class="num">' + hitHtml + '</td>'
         + '<td class="num">' + (m.credits === null || m.credits === undefined ? '—' : Number(m.credits).toFixed(2)) + '</td>'
@@ -1186,7 +1373,7 @@
     });
 
     if (!info.rows.length) {
-      body.innerHTML = '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+      body.innerHTML = '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
       return;
     }
 
@@ -1215,11 +1402,10 @@
         ? '—'
         : (Number(rate) * 100).toFixed(1) + '%';
       // ⚠️ 「成功」「失败」两列已按委托方要求删除（信息量低）。
+      // 2026-10-09 再按要求砍列：删「输入」「输出」，「合计」改名「Tokens」。
       html += '<tr>'
         + nameHtml
         + '<td class="num">' + fmtInt(a.requests) + '</td>'
-        + '<td class="num">' + fmtNum(a.prompt_tokens) + '</td>'
-        + '<td class="num">' + fmtNum(a.completion_tokens) + '</td>'
         + '<td class="num">' + fmtNum(a.total_tokens) + '</td>'
         + '<td class="num">' + hitHtml + '</td>'
         + '<td class="num">' + (a.credits === null || a.credits === undefined ? '—' : Number(a.credits).toFixed(2)) + '</td>'
@@ -1281,7 +1467,7 @@
     });
 
     if (!info.rows.length) {
-      body.innerHTML = '<tr><td colspan="11" class="empty">暂无调用记录</td></tr>';
+      body.innerHTML = '<tr><td colspan="8" class="empty">暂无调用记录</td></tr>';
       return;
     }
 
@@ -1293,46 +1479,37 @@
         ? esc(e.nickname) + platTagOf(e.platform)
         : '<span class="mono" title="账号已不在管理中">' + esc(e.account) + '</span>';
 
-      // token：上游没给 usage 时显示 —，**不能显示 0** ——
-      // "没拿到"与"确实是 0"含义不同（见 usage.Event.UsageKnown 的注释）。
-      var inTok = e.usage_known ? fmtNum(e.prompt_tokens) : '—';
-      var outTok = e.usage_known ? fmtNum(e.completion_tokens) : '—';
-      // 合计：委托方 2026-10-09 要求「输入输出后面都加一个合计」。
-      // 同样受 usage_known 约束 —— 未知时显示 —，不显示 0。
-      var totTok = e.usage_known ? fmtNum(e.total_tokens) : '—';
-
-      var rate = e.cache_hit_rate;
-      var hitHtml = (rate === null || rate === undefined)
-        ? '—'
-        : (Number(rate) * 100).toFixed(1) + '%';
+      // Tokens：本次调用的总 token。
+      //
+      // 🔴 显示**纯数字 + 千分位**，不做「万/亿」缩写
+      //	（2026-10-09 委托方明确要求「记得显示纯数字，120000而不是12w」）。
+      //	明细行的用途是对账，缩写的数字没法核对。
+      //
+      // ⚠️ 上游没给 usage 时显示 —，**不能显示 0** ——
+      //	"没拿到"与"确实是 0"含义不同（见 usage.Event.UsageKnown 的注释）。
+      var tokHtml = e.usage_known ? fmtNumExact(e.total_tokens) : '—';
 
       var creditHtml = (e.credits === null || e.credits === undefined)
         ? '—'
         : Number(e.credits).toFixed(2);
 
-      // 耗时：有首字耗时（TTFT）时拆成「首字 x / 总 y」，
-      // 没有时只显示总耗时。
+      // 首字耗时（TTFT）—— 独立成列。
       //
-      // 🔴 为什么要拆（委托方 2026-10-09 要求「能不能获取到首字耗时」）：
-      //	总耗时对流式请求意义有限 —— 用户体感的是"多久开始出字"。
-      //	40 秒总耗时 + 0.8 秒首字 与 40 秒 + 20 秒首字，
-      //	是完全不同的体验，只看总数分不出来。
+      // 🔴 此前的 bug（2026-10-09 已修，后端部分）：chat.go 原先在
+      //	`TryChat` **之后**才构造记账器，而 TryChat 会阻塞到上游首个
+      //	事件到达 ⇒ 量到的只是「TryChat 返回 → 写首帧」那几毫秒，
+      //	**整列恒为 0ms**。
+      //	现在起点提到 TryChat 之前（见 chat.go 的 reqStart），
+      //	这一列才是真正的"从用户发出请求到看见第一个字"。
       //
-      // ⚠️ 首字耗时只对**流式**请求有意义：非流式要收齐才返回，
-      //	首字与总耗时本来就是同一个时刻。后端只在流式路径采集它，
-      //	非流式记录里该字段为 null，这里自然退回只显示总耗时。
-      var durHtml;
-      if (e.ttft_ms === null || e.ttft_ms === undefined) {
-        durHtml = fmtInt(e.duration_ms) + 'ms';
-      } else {
-        durHtml = '<span class="ttft">首字 ' + fmtInt(e.ttft_ms) + 'ms</span>'
-          + '<span class="dur-sep">/</span>'
-          + fmtInt(e.duration_ms) + 'ms';
-      }
+      // ⚠️ 非流式仍然是 `—`：非流式要收齐才返回，"首字"与"完成"本就是
+      //	同一刻，后端不在该路径采集它（留 nil）。这是**如实留空**，
+      //	不是"没测到"——所以不要为了好看给它填 0 或总耗时。
+      var ttftHtml = (e.ttft_ms === null || e.ttft_ms === undefined)
+        ? '—'
+        : fmtDur(e.ttft_ms);
 
-      // 流：委托方 2026-10-09 要求显示流信息。
-      // 同时给出吞吐（t/s）—— 那是"流得快不快"最直观的指标。
-      // ⚠️ 吞吐只在**有 token 数与耗时**时才算；否则显示 —（不编造）。
+      // 流：保留流/非流标识 + 吞吐（t/s）。
       var streamHtml;
       if (e.stream) {
         var tps = null;
@@ -1347,32 +1524,47 @@
         streamHtml = '<span class="stream-off">非流</span>';
       }
 
-      // 状态：成功绿色；客户端断开单独说明（那不是服务故障）；
-      // 上游报错红色并把原因放 tooltip。
-      var stHtml;
-      if (e.ok) {
-        stHtml = '<span class="log-ok">成功</span>';
-      } else if (e.status === 'client_disconnected') {
-        stHtml = '<span class="log-warn" title="客户端提前断开，不算服务端故障">已断开</span>';
-      } else {
-        stHtml = '<span class="log-bad" title="' + esc(e.error || '') + '">失败</span>';
+      // 🔴 「状态」列已按委托方要求删除（2026-10-09 要求的列序里没有它）。
+      //	但**失败信息不能丢** —— 失败时给整行加一个左边框色标 + 标题提示，
+      //	这样"哪次调用出问题了"仍然一眼可见，只是不再占一整列。
+      var rowBad = '';
+      var rowTitle = '';
+      if (!e.ok) {
+        rowBad = ' class="log-row-bad"';
+        rowTitle = ' title="' + esc(e.status === 'client_disconnected'
+          ? '客户端提前断开，不算服务端故障'
+          : ('调用失败：' + (e.error || e.status || '未知原因'))) + '"';
       }
 
-      html += '<tr>'
+      // 列序（委托方指定）：时间 → 账号 → 模型 → 流 → Tokens → 首字 → 耗时 → 积分
+      html += '<tr' + rowBad + rowTitle + '>'
         + '<td class="mono">' + esc(e.time || '') + '</td>'
         + '<td>' + nameHtml + '</td>'
-        + '<td class="mono">' + esc(e.model || '') + '</td>'
-        + '<td class="num">' + inTok + '</td>'
-        + '<td class="num">' + outTok + '</td>'
-        + '<td class="num">' + totTok + '</td>'
-        + '<td class="num">' + hitHtml + '</td>'
-        + '<td class="num">' + creditHtml + '</td>'
-        + '<td class="num">' + durHtml + '</td>'
+        + '<td class="mono" title="' + esc(e.model || '') + '">' + esc(e.model || '') + '</td>'
         + '<td>' + streamHtml + '</td>'
-        + '<td>' + stHtml + '</td>'
+        + '<td class="num">' + tokHtml + '</td>'
+        + '<td class="num">' + ttftHtml + '</td>'
+        + '<td class="num">' + fmtDur(e.duration_ms) + '</td>'
+        + '<td class="num">' + creditHtml + '</td>'
         + '</tr>';
     }
     body.innerHTML = html;
+  }
+
+  // fmtDur 把毫秒转成人类可读：843 → 843ms，43000 → 43.0s，95000 → 1m35s。
+  //
+  // 🔴 为什么不直接用 "43000ms"：耗时列里大部分是几十秒，
+  //	五位毫秒数既占宽又难比大小（43000 与 9500 要数字符才知道差距）。
+  //	超过 1 分钟用 m+s 更直观（"1m35s" 比 "95000ms" 一眼可懂）。
+  function fmtDur(ms) {
+    if (ms === null || ms === undefined) return '—';
+    var n = Number(ms);
+    if (n < 1000) return n + 'ms';
+    if (n < 60000) return (n / 1000).toFixed(1) + 's';
+    var m = Math.floor(n / 60000);
+    var s = Math.round((n % 60000) / 1000);
+    if (s === 60) { m += 1; s = 0; }   // 四舍五入进位，避免出现 "1m60s"
+    return m + 'm' + (s > 0 ? s + 's' : '');
   }
 
   function initUsageLog() {

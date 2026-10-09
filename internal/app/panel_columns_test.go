@@ -40,9 +40,13 @@ func TestPanelTableColumnCountsMatch(t *testing.T) {
 		wantTH int
 		why    string
 	}{
-		{"usage-log-table", 11, "时间/账号/模型/输入/输出/合计/缓存命中率/积分/耗时/流/状态"},
-		{"model-table", 7, "模型/调用/输入/输出/合计/缓存命中率/积分"},
-		{"acct-table", 7, "账号/调用/输入/输出/合计/缓存命中率/积分"},
+		// 2026-10-09 委托方重新定义了三张表的列（见 drawUsageLog 的列序注释）：
+		//   调用记录：时间/账号/模型/流/Tokens/首字/耗时/积分（原 11 列 → 8 列：
+		//     删「输入」「输出」「合计」「缓存命中率」「状态」，合计改名 Tokens）
+		//   模型/账号用量：模型|账号/调用/Tokens/缓存命中率/积分（原 7 列 → 5 列）
+		{"usage-log-table", 8, "时间/账号/模型/流/Tokens/首字/耗时/积分"},
+		{"model-table", 5, "模型/调用/Tokens/缓存命中率/积分"},
+		{"acct-table", 5, "账号/调用/Tokens/缓存命中率/积分"},
 	}
 	for _, tc := range cases {
 		if got := thCount(t, html, tc.table); got != tc.wantTH {
@@ -158,10 +162,15 @@ func TestUsageLogRendersAllColumns(t *testing.T) {
 
 	// 该段里 '<td' 的出现次数 = 每行渲染的单元格数
 	// （每处 '\'' + \'<td ...\' 是一个单元格；用 "<td" 计数即可）
+	//
+	// ⚠️ 2026-10-09 起 drawUsageLog 里还有别处的 '<td'（失败行的样式
+	//	拼接不走 <td>，但若将来加了就得同步改这里）。改成用**表头列数**
+	//	作为期望值，避免常量与表头再次分叉（两处各自写死 = 迟早不一致）。
 	total := strings.Count(seg, "'<td")
-	if total != 11 {
-		t.Errorf("drawUsageLog 渲染 %d 个 <td>，但表头有 11 列 —— "+
-			"列数不一致会让表头与数据错位（不会报错，只是显示错）", total)
+	want := thCount(t, panelAsset(t, "index.html"), "usage-log-table")
+	if total != want {
+		t.Errorf("drawUsageLog 渲染 %d 个 <td>，但表头有 %d 列 —— "+
+			"列数不一致会让表头与数据错位（不会报错，只是显示错）", total, want)
 	}
 }
 

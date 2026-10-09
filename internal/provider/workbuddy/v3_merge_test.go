@@ -3,6 +3,7 @@ package workbuddy
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -102,10 +103,23 @@ func TestV3ModelsAreNotTrimmedByAgents(t *testing.T) {
 		"（它的 agents.cli 实测漏掉这个 ID）")
 }
 
-// TestV3FailureFallsBackToStaticTable 守：/v3 不可用时**退回静态表**。
+// TestV3FailureLosesSupplementalModelsHonestly 守：/v3 不可用时
+// **如实少列**那 5 个目录外模型（不再用静态表兜底）。
 //
-// 委托方明确要求保留静态表作为兜底：/v3 挂了不该让那 5 个模型消失。
-func TestV3FailureFallsBackToStaticTable(t *testing.T) {
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 本条测试替代了原来的 TestV3FailureFallsBackToStaticTable
+// ═══════════════════════════════════════════════════════════════════
+//
+//	原测试断言"静态表把 5 个模型补回来"。委托方 2026-10-09 要求
+//	删除静态表（原话见 supplement.go 的包注释），理由是那张表是
+//	一次性抄录的倍率快照，**只在上游拉取失败时启用** ——
+//	而那个时刻恰恰最可能是"上游改了定价/下架了模型"，
+//	它会用过期数据冒充权威值。
+//
+//	⇒ 新语义：/v3 挂了就是少列，**不补假数据**。
+//	  本测试同时守住"整体不失败"（/v2 的数据仍要正常返回）——
+//	  删兜底不等于允许一挂就全空。
+func TestV3FailureLosesSupplementalModelsHonestly(t *testing.T) {
 	c, fake := newFakeClient(t)
 	fake.WithJSON("models-listing-intl.json")
 	// 让 /v3/config 返回 500
@@ -115,76 +129,63 @@ func TestV3FailureFallsBackToStaticTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("拉取失败（/v3 挂了不应让整体失败）: %v", err)
 	}
+	if len(models) == 0 {
+		t.Fatal("/v3 挂了就一个模型都不给 —— 应仍返回 /v2 的数据，" +
+			"不能因为删了静态兜底就整体失败")
+	}
 
 	byID := map[string]provider.Model{}
 	for _, m := range models {
 		byID[m.ID] = m
 	}
-	// 5 个都应在（由静态表兜底）
-	want := []string{
-		"workbuddyai/deepseek-v4.1-flash",
-		"workbuddyai/deepseek-v4.1-flash-sg",
-		"workbuddyai/glm-5.3-flash",
-		"workbuddyai/kimi-k2.8-preview",
+
+	// 🔴 反向断言：这 5 个目录外模型**不许**出现。
+	//	它们只能来自上游 /v3；/v3 挂了就没有可信来源，
+	//	此时出现任何一个都说明静态表被"好心"加回来了。
+	for _, gone := range []string{
 		"workbuddyai/gpt-6-astra",
-	}
-	for _, id := range want {
-		if _, ok := byID[id]; !ok {
-			t.Errorf("/v3 失败时应由静态表兜底，但缺少 %s", id)
+		"workbuddyai/kimi-k2.8-preview",
+		"workbuddyai/glm-5.3-flash",
+		"workbuddyai/deepseek-v4.1-flash-sg",
+	} {
+		if _, ok := byID[gone]; ok {
+			t.Errorf("/v3 失败时出现了 %s —— 说明静态兜底表被恢复了。\n"+
+				"  委托方 2026-10-09 明确要求删除该表：它是过期快照，"+
+				"在上游拉取失败时冒充权威数据（详见 supplement.go 包注释）", gone)
 		}
-	}
-	// 兜底值来自静态表（gpt-6-astra 6.67）
-	if p := byID["workbuddyai/gpt-6-astra"].Pricing; p == nil || p.Multiplier != 6.67 {
-		t.Errorf("兜底倍率不对: %+v", p)
 	}
 }
 
-// TestStaticTableNotUsedWhenV3Works 守：/v3 正常时**不启用静态表**。
+// TestStaticTableIsGone 守：静态兜底表**确实已被删除**，不许复活。
 //
-// 🔴 为什么重要：静态表是"上游没给"时的猜测性兜底。
+// 🔴 这是结构性断言（审源码），不是行为断言 —— 因为"兜底"这种行为
 //
-//	若 /v3 正常还去补，会把上游**已下架**的模型重新复活
-//	（用户选到调不通的模型 —— 正是本项目一直在防的坏体验）。
+//	只在 /v3 失败时才生效，而失败路径的测试很容易被后来者顺手改掉。
+//	直接盯住"那张表的数据是否又出现在源码里"更可靠。
 //
-// 做法：样本里 /v3 给 glm-5.3-flash = 0.06；把静态表里该条改成 0.99，
-// 断言最终结果是 0.06（说明走的是 /v3，不是静态表）。
-func TestStaticTableNotUsedWhenV3Works(t *testing.T) {
-	c, _ := newIntlBothSources(t)
-
-	models, err := c.Models(context.Background(), testCred(), PlatformIntl)
-	if err != nil {
-		t.Fatalf("拉取失败: %v", err)
-	}
-	for _, m := range models {
-		if m.UpstreamID == "glm-5.3-flash" {
-			if m.Pricing == nil || m.Pricing.Multiplier != 0.06 {
-				t.Errorf("glm-5.3-flash 倍率 = %+v，期望 0.06（/v3 的值）", m.Pricing)
+// 反向对照：把任何一条旧的静态条目（如 gpt-6-astra 的 6.67）
+// 写回 supplement.go，本条立刻红。
+func TestStaticTableIsGone(t *testing.T) {
+	// 读取生产源码（不是测试文件）—— 只看 supplement.go 与 models.go。
+	for _, f := range []string{"supplement.go", "models.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("读取 %s 失败: %v", f, err)
+		}
+		text := string(src)
+		// 注释里可以提到这些名字（解释为什么删），但**不许**有
+		// 赋值形态的静态倍率条目 —— 那种形态只可能来自兜底表。
+		for _, bad := range []string{
+			"intlSupplementalModels",
+			"applySupplementalModels",
+			"supplementalModel{",
+		} {
+			if strings.Contains(text, bad) {
+				t.Errorf("%s 里仍存在静态兜底表符号 %q —— "+
+					"委托方 2026-10-09 要求删除（理由见 supplement.go 包注释）",
+					f, bad)
 			}
-			return
 		}
-	}
-	t.Error("缺少 glm-5.3-flash")
-}
-
-// TestV3EmptyModelsTreatedAsFailure 守：/v3 返回 0 个模型按**失败**处理。
-//
-// 理由：若上游改结构导致解析成空，静默接受会让 5 个补充模型无声消失
-// （而且不会走静态兜底）。所以空响应必须走兜底路径。
-func TestV3EmptyModelsTreatedAsFailure(t *testing.T) {
-	c, fake := newFakeClient(t)
-	fake.WithJSON("models-listing-intl.json")
-	fake.WithJSONBodyForPath("/v3/config", []byte(`{"code":0,"msg":"ok","data":{"models":[]}}`))
-
-	models, err := c.Models(context.Background(), testCred(), PlatformIntl)
-	if err != nil {
-		t.Fatalf("不应失败: %v", err)
-	}
-	byID := map[string]provider.Model{}
-	for _, m := range models {
-		byID[m.ID] = m
-	}
-	if _, ok := byID["workbuddyai/gpt-6-astra"]; !ok {
-		t.Error("/v3 返回空时应按失败处理并走静态兜底，但 gpt-6-astra 不在结果里")
 	}
 }
 

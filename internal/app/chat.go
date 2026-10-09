@@ -189,6 +189,15 @@ func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// 🔴 起点必须在 TryChat **之前**取（2026-10-09 修首字恒 0ms 的缺陷）。
+	//
+	//	TryChat 会阻塞直到上游首个事件到达（它要"先确认上游可用再写 200"）。
+	//	若在它之后才 time.Now()，则：
+	//	  · 首字耗时 = 「TryChat 返回 → 写首帧」≈ 0ms（委托方看到的全是 0ms）
+	//	  · 总耗时   漏掉"选号 + 建连 + 等上游首事件"这段真实等待
+	//	⇒ 两者都要覆盖用户等待的完整时间，所以起点在这里。
+	reqStart := time.Now()
+
 	// ── 阶段一：建立会话（此时一个字节都还没写给客户端）──
 	sess, err := TryChat(ctx, deps, deps.Chatter, chatReq)
 	if err != nil {
@@ -198,9 +207,9 @@ func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.R
 	}
 	defer sess.Close()
 
-	// 记账器：在写出响应之前建好，确保后续每条分支都能记上账。
-	rec := newUsageRecorderFor(deps, clientModel, chatReq.Model, true,
-		sess.AccountID(), providerID, codec.protocol)
+	// 记账器：起点用上面取好的 reqStart（不是此刻）。
+	rec := newUsageRecorderFrom(deps, clientModel, chatReq.Model, true,
+		sess.AccountID(), providerID, codec.protocol, reqStart)
 
 	// ── 阶段二：确认上游可用，开始写响应 ──
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -287,6 +296,11 @@ func streamChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.R
 func aggregateChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *http.Request,
 	chatReq provider.ChatRequest, clientModel, providerID string, codec chatCodec) {
 
+	// 起点在 TryChat 之前 —— 与 streamChat 同样的理由（见那里的说明）。
+	// 非流式不采集首字耗时（留 nil），但**总耗时**同样需要覆盖上游等待，
+	// 否则统计里的耗时是偏小的。
+	reqStart := time.Now()
+
 	sess, err := TryChat(ctx, deps, deps.Chatter, chatReq)
 	if err != nil {
 		writeUpstreamErrorWith(w, err, codec)
@@ -294,8 +308,8 @@ func aggregateChat(deps Deps, ctx context.Context, w http.ResponseWriter, r *htt
 	}
 	defer sess.Close()
 
-	rec := newUsageRecorderFor(deps, clientModel, chatReq.Model, false,
-		sess.AccountID(), providerID, codec.protocol)
+	rec := newUsageRecorderFrom(deps, clientModel, chatReq.Model, false,
+		sess.AccountID(), providerID, codec.protocol, reqStart)
 
 	// 协议差异点 3：非流式聚合器。两者都要自己聚合（上游强制流式），
 	// 但产出形状不同（OpenAI choices / Anthropic content blocks）。
