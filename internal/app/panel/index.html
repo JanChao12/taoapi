@@ -133,7 +133,7 @@
             <button type="button" class="btn btn-sm" id="btn-refresh-usage-log">刷新</button>
           </div>
         </div>
-        <table class="tbl tbl-even" id="usage-log-table">
+        <table class="tbl tbl-log" id="usage-log-table">
           <thead>
             <tr>
               <th>时间</th>
@@ -141,8 +141,8 @@
               <th>模型</th>
               <th>流</th>
               <th class="num">Tokens</th>
-              <th class="num">首字</th>
-              <th class="num">耗时</th>
+              <th class="num">缓存命中率</th>
+              <th class="num">首字/耗时</th>
               <th class="num">积分</th>
             </tr>
           </thead>
@@ -162,18 +162,17 @@
         <h2>模型用量</h2>
         <div class="table-chart">
           <div class="table-chart-tbl">
-            <table class="tbl tbl-even" id="model-table">
+            <table class="tbl tbl-wide" id="model-table">
               <thead>
                 <tr>
                   <th>模型</th>
                   <th class="num">调用</th>
                   <th class="num">Tokens</th>
-                  <th class="num">缓存命中率</th>
                   <th class="num">积分</th>
                 </tr>
               </thead>
               <tbody id="model-body">
-                <tr><td colspan="5" class="empty">加载中…</td></tr>
+                <tr><td colspan="4" class="empty">加载中…</td></tr>
               </tbody>
             </table>
             <nav class="pager" id="model-pager"></nav>
@@ -190,18 +189,17 @@
         <h2>账号用量</h2>
         <div class="table-chart">
           <div class="table-chart-tbl">
-            <table class="tbl tbl-even" id="acct-table">
+            <table class="tbl tbl-wide" id="acct-table">
               <thead>
                 <tr>
                   <th>账号</th>
                   <th class="num">调用</th>
                   <th class="num">Tokens</th>
-                  <th class="num">缓存命中率</th>
                   <th class="num">积分</th>
                 </tr>
               </thead>
               <tbody id="acct-body">
-                <tr><td colspan="5" class="empty">加载中…</td></tr>
+                <tr><td colspan="4" class="empty">加载中…</td></tr>
               </tbody>
             </table>
             <nav class="pager" id="acct-pager"></nav>

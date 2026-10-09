@@ -287,3 +287,175 @@ func TestPanelDurationUsesSecondsOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestUsageLogTokensShowsInputAndOutput 守：Tokens 列是「输入 / 输出」两个数。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方澄清（2026-10-09）：
+//
+//	「调用记录Tokens我说过内容是输入/输出，你现在只有输入」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+//	我此前按"合计改名 Tokens"实现，只显示 total_tokens —— 理解错了。
+//	他要的是**两个数并排**：输入(cache/prompt) / 输出(completion)。
+//	合计能一眼相加得出，而"输入多少、输出多少"是拆不开的信息
+//	（同一个总 token 数可能是"长输入短输出"或反之）。
+//
+// 反向对照：把 tokHtml 改回只读 total_tokens，本条立刻红。
+func TestUsageLogTokensShowsInputAndOutput(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+	seg := funcBody(t, js, "drawUsageLog")
+
+	for _, want := range []string{"e.prompt_tokens", "e.completion_tokens"} {
+		if !strings.Contains(seg, want) {
+			t.Errorf("drawUsageLog 的 Tokens 列没有用 %s —— "+
+				"委托方要求内容是「输入/输出」两个数，不是一个合计值", want)
+		}
+	}
+	// 必须用纯数字格式化（委托方：「120000而不是12w」）
+	if !strings.Contains(seg, "fmtNumExact(") {
+		t.Error("Tokens 列必须用 fmtNumExact（千分位纯数字），不能用会缩写的 fmtNum")
+	}
+	// 反向断言：不许只用 total_tokens 当 Tokens 列的内容
+	if strings.Contains(seg, "fmtNumExact(e.total_tokens)") {
+		t.Error("Tokens 列仍在只显示 total_tokens —— " +
+			"委托方澄清过内容应是「输入/输出」")
+	}
+}
+
+// TestUsageLogTTFTIsGreenInMergedColumn 守：首字/耗时合并为一列且首字为绿色。
+//
+// 委托方原话：「首字和耗时合并为首字/耗时，内容是首字/耗时，
+//
+//	但是内容中的首字字体颜色是绿色的」。
+func TestUsageLogTTFTIsGreenInMergedColumn(t *testing.T) {
+	html := stripHTMLComments(panelAsset(t, "index.html"))
+	js := stripJSComments(panelAsset(t, "app.js"))
+	css := panelAsset(t, "style.css")
+
+	// ① 表头只有一列「首字/耗时」，不再有独立的「首字」「耗时」
+	if !strings.Contains(html, ">首字/耗时<") {
+		t.Error("表头缺少合并后的「首字/耗时」列")
+	}
+	for _, gone := range []string{">首字<", ">耗时<"} {
+		if strings.Contains(html, gone) {
+			t.Errorf("表头仍有独立的 %s 列 —— 委托方要求合并为一列", gone)
+		}
+	}
+
+	// ② 渲染时必须把首字包在 .ttft 里（绿色样式挂在它上面）
+	seg := funcBody(t, js, "drawUsageLog")
+	if !strings.Contains(seg, `class="ttft"`) {
+		t.Error("首字没有包 .ttft —— 绿色样式挂不上，委托方要求首字显示为绿色")
+	}
+	if !strings.Contains(seg, `class="dur-sep"`) {
+		t.Error("合并列缺少 dur-sep 分隔符（应为 `首字 / 耗时`）")
+	}
+
+	// ③ CSS 里 .ttft 必须是绿色系（不能只有继承色）
+	idx := strings.Index(css, ".dur-pair .ttft")
+	if idx < 0 {
+		t.Fatal("style.css 缺少 .dur-pair .ttft 规则 —— 首字不会变绿")
+	}
+	rule := css[idx:]
+	if end := strings.Index(rule, "}"); end > 0 {
+		rule = rule[:end]
+	}
+	if !strings.Contains(rule, "color:") {
+		t.Errorf(".dur-pair .ttft 没有 color —— 委托方要求首字是绿色。实际规则：%s", rule)
+	}
+}
+
+// TestStatsTableAutoRefreshDisabled 守：用量统计页**不再自动轮询**，
+// 但账号管理页仍轮询。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方原话（2026-10-09）：
+//
+//	「取消调用记录自动刷新，只需要我进入调用记录页面自动刷新一次就过来，
+//	  后续我可以去其他页面再回来调用记录刷新或者直接点击刷新按钮手动刷新」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// ⚠️ 这条测试**不是**在守"少发请求"这种性能口味 —— 它守的是一个真 bug：
+//
+//	5 秒轮询会重建整张表并触发 pageSlice 的页码夹取。数据在那一瞬间
+//	变少（或为空）时页码被**永久**夹到第 1 页 —— 委托方实测现象是
+//	「我切到其他页看记录，过几秒自动刷新回到了第一页」。
+//
+//	同时它也确认"进页面刷新一次"仍然有效（switchPage 会调用 pages[name]），
+//	否则用户就只能靠手动点刷新，与委托方描述的行为不符。
+//
+// 反向对照：把 stats 加回 POLLED_PAGES，本条立刻红。
+func TestStatsTableAutoRefreshDisabled(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+
+	idx := strings.Index(js, "var POLLED_PAGES")
+	if idx < 0 {
+		t.Fatal("找不到 POLLED_PAGES 定义")
+	}
+	line := js[idx:]
+	if end := strings.Index(line, "\n"); end > 0 {
+		line = line[:end]
+	}
+
+	// ① 用量统计页不许再轮询
+	if strings.Contains(line, "stats: true") {
+		t.Error("POLLED_PAGES 里仍有 stats: true —— " +
+			"委托方要求取消用量统计页的自动刷新（它会触发页码被夹回第 1 页）")
+	}
+	// ② 账号管理页必须仍然轮询（额度/签到状态会变，且那张表无分页）
+	if !strings.Contains(line, "accounts: true") {
+		t.Errorf("POLLED_PAGES 丢了 accounts: true —— 账号页需要轮询。"+
+			"实际：%s", line)
+	}
+
+	// ③ "进页面刷新一次"必须仍然有效：stats 页的加载函数要同时拉明细与聚合。
+	//	（switchPage 会调用 pages[name]()，所以只要它非空就成立了。）
+	pIdx := strings.Index(js, "stats: function ()")
+	if pIdx < 0 {
+		t.Fatal("pages.stats 不见了 —— 切到统计页将不会加载任何数据")
+	}
+	body := js[pIdx:]
+	// ⚠️ 不要按固定缩进切 —— 注释里也有同级缩进，会提前截断（本测试第一版就踩了，
+	//	报"实际：stats: function () {"这种明显不对的片段）。
+	//	改为切到下一个 pages 条目为止。
+	if next := strings.Index(body, "accounts: loadAccts"); next > 0 {
+		body = body[:next]
+	}
+	if !strings.Contains(body, "loadUsageLog()") || !strings.Contains(body, "loadStats()") {
+		t.Errorf("pages.stats 必须同时调用 loadUsageLog 与 loadStats "+
+			"（进页面刷新一次要拉到明细+聚合）。实际：%s", body)
+	}
+}
+
+// TestPageSliceNeverClampsToFirstWhenEmpty 守：空数据时**不夹取页码**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 这是"自动跳回第一页"那个 bug 的**直接**护栏。
+// ═══════════════════════════════════════════════════════════════════
+//
+//	原实现 `p = Math.min(Math.max(1, page), pages)` 无条件夹取。
+//	当 rows 为空时 pages = 1 ⇒ 用户停在第 5 页也会被夹到 1，
+//	且调用方 `st.page = info.page` 把它**写回状态** ⇒ 永久丢失原页码。
+//
+//	修法：total === 0 时原样保留用户选的页码。
+//
+// 反向对照：去掉 `total === 0 ?` 分支，本条立刻红。
+func TestPageSliceNeverClampsToFirstWhenEmpty(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+	body := funcBody(t, js, "pageSlice")
+
+	// 必须存在"空数据单独处理"的分支
+	if !strings.Contains(body, "total === 0") {
+		t.Error("pageSlice 没有区分 total === 0 ——\n" +
+			"  空数据时 pages 恒为 1，无条件夹取会把页码永久改成第 1 页，\n" +
+			"  现象就是委托方实测的「过几秒自动刷新回到了第一页」。")
+	}
+	// 空数据分支必须返回原始页码（不是 1）
+	if !strings.Contains(body, "Math.max(1, page)") {
+		t.Error("pageSlice 的空数据分支应原样保留用户页码（Math.max(1, page)），" +
+			"不要退回第 1 页")
+	}
+}

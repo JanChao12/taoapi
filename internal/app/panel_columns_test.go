@@ -41,12 +41,15 @@ func TestPanelTableColumnCountsMatch(t *testing.T) {
 		why    string
 	}{
 		// 2026-10-09 委托方重新定义了三张表的列（见 drawUsageLog 的列序注释）：
-		//   调用记录：时间/账号/模型/流/Tokens/首字/耗时/积分（原 11 列 → 8 列：
-		//     删「输入」「输出」「合计」「缓存命中率」「状态」，合计改名 Tokens）
-		//   模型/账号用量：模型|账号/调用/Tokens/缓存命中率/积分（原 7 列 → 5 列）
-		{"usage-log-table", 8, "时间/账号/模型/流/Tokens/首字/耗时/积分"},
-		{"model-table", 5, "模型/调用/Tokens/缓存命中率/积分"},
-		{"acct-table", 5, "账号/调用/Tokens/缓存命中率/积分"},
+		//   调用记录：时间/账号/模型/流/Tokens/缓存命中率/首字耗时/积分（8 列）
+		//     · Tokens 内容是「输入 / 输出」两个数（委托方澄清："你现在只有输入"）
+		//     · 「首字」与「耗时」合并为一列（首字绿色）
+		//     · 缓存命中率按委托方要求移到 Tokens 右边
+		//   模型/账号用量：模型|账号/调用/Tokens/积分（各 4 列）
+		//     · 「缓存命中率」删除，腾宽度让模型名/账号名一行显示完整
+		{"usage-log-table", 8, "时间/账号/模型/流/Tokens/缓存命中率/首字耗时/积分"},
+		{"model-table", 4, "模型/调用/Tokens/积分"},
+		{"acct-table", 4, "账号/调用/Tokens/积分"},
 	}
 	for _, tc := range cases {
 		if got := thCount(t, html, tc.table); got != tc.wantTH {

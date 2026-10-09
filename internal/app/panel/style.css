@@ -226,11 +226,14 @@ body {
 .log-warn { color: #92600a; font-weight: 600; }
 .log-bad  { color: #dc2626; font-weight: 600; }
 
-/* 首字耗时（TTFT）与总耗时的区分 ——
-   首字是用户体感的那一项（"多久开始出字"），用主色强调；
-   总耗时用默认灰色，避免两个数字抢注意力。 */
-.ttft     { color: #0b7a6b; font-weight: 600; }
-.dur-sep  { color: #cbd5e1; margin: 0 4px; }
+/* 首字/耗时合并成一列：`0.6s / 40.0s`。
+   委托方要求：内容为「首字/耗时」，且其中**首字用绿色**。
+   ⇒ 首字为主体信息（用户体感"多久开始出字"），用面板主色系的深绿强调；
+     耗时是次要信息，用默认灰，避免两个数字抢注意力。
+   数字用 tabular-nums 等宽，竖着扫视时小数点对齐。 */
+.dur-pair { font-variant-numeric: tabular-nums; }
+.dur-pair .ttft { color: #0b7a6b; font-weight: 600; }
+.dur-pair .dur-sep { color: #cbd5e1; margin: 0 4px; }
 
 /* 流的标记：流式 / 非流式 + 吞吐（t/s）—— 2026-10-09 委托方要求显示流信息。
    流式用蓝色（与面板其它"活动"语义一致），非流式用灰（静态）。 */
@@ -238,8 +241,17 @@ body {
 .stream-off { color: #94a3b8; }
 .stream-tps { color: #94a3b8; margin-left: 6px; font-size: 0.9em; }
 
-/* 调用记录表较宽（11 列），窄屏允许横向滚动而不是挤爆布局 */
-#usage-log-table { min-width: 1100px; }
+/* Tokens 列的「输入 / 输出」：与首字/耗时同构（分子/分母），
+   斜杠用浅灰、数字等宽，两列竖着比对得齐。 */
+.tok-pair { font-variant-numeric: tabular-nums; }
+.tok-pair .tok-sep { color: #cbd5e1; margin: 0 3px; }
+
+/* 调用记录行失败色标（「状态」列已删，用左边框保留"哪次失败"的可视信息） */
+.log-row-bad { background: #fef7f7; }
+.log-row-bad td:first-child { box-shadow: inset 3px 0 0 #dc2626; }
+
+/* 调用记录表较宽，窄屏允许横向滚动而不是挤爆布局 */
+#usage-log-table { min-width: 1180px; }
 #usage-log-table td.mono { white-space: nowrap; }
 
 /* 分页条（模型用量 / 账号用量 / 调用记录三个列表共用）——
@@ -422,19 +434,27 @@ body {
 .tbl .empty { text-align: center; color: #b0b6bd; padding: 22px; }
 .bar-col { width: 22%; }
 
-/* 等宽列（2026-10-09 委托方要求）：
-   「三个列表都应该像图7每一列之间的间隔距离都一样」。
-   table-layout: fixed 让每列宽度均等 ⇒ 列间隔自然一致；
-   默认的 auto 布局会按内容撑宽（模型 ID 长的列挤掉其它列）。 */
-.tbl-even { table-layout: fixed; }
-.tbl-even th, .tbl-even td { overflow: hidden; text-overflow: ellipsis; }
+/* 🔴 列宽由**内容**决定，不要 table-layout: fixed
+   （2026-10-09 委托方反馈：「模型名字显示不全，这每列之间间隔也不对啊」）。
+
+   我上一版用 fixed 想实现"每列间隔一致"，但 fixed 是**平均分宽度**：
+     · 「时间」列白占一大片（内容只有 19 字符）
+     · 「模型」列被压到 1/8 ⇒ `workbuddy/deepseek-v4.1-fla…` 被截断
+   结果是"该宽的没宽、该窄的没窄"，看起来就是间隔不对。
+
+   正确做法是 auto（浏览器默认）：按内容分配宽度，再把剩余空间摊给各列。
+   配合 nowrap 让模型名/账号名**一行显示完整**（不省略号截断）。 */
+.tbl-log th, .tbl-log td,
+.tbl-wide th, .tbl-wide td { white-space: nowrap; }
 
 /* 左表右图（模型用量 / 账号用量）：列表宽度减半，右侧画趋势图。
-   委托方原话：「列表右边用来生成图5图6这种可视化」。 */
+   委托方原话：「列表右边用来生成图5图6这种可视化」。
+   ⚠️ 已按委托方要求删掉「缓存命中率」列，腾出的空间给模型名/账号名
+      —— 那两列本来就最容易超宽。 */
 .table-chart { display: flex; gap: 18px; align-items: flex-start; }
-.table-chart-tbl { flex: 1 1 50%; min-width: 0; }
+.table-chart-tbl { flex: 1 1 54%; min-width: 0; }
 .table-chart-fig {
-  flex: 1 1 50%;
+  flex: 1 1 46%;
   min-width: 0;
   border: 1px solid #eef0f3;
   border-radius: 10px;

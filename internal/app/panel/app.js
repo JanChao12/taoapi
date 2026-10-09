@@ -996,10 +996,22 @@
   //
   // 🔴 "当前页超出范围"要自动回退：数据变少时，
   //	原来停在第 3 页的用户会看到空表。这里自动夹到最后一页。
+  //
+  // ⚠️ 但这个夹取**只在数据非空时**才写回调用方（2026-10-09 修）。
+  //
+  //	原实现无条件返回夹取后的页码，调用方 `st.page = info.page` 写回。
+  //	后果（委托方实测：「我切到其他页看记录，过几秒自动刷新回到了第一页」）：
+  //	  轮询拿到的**那一瞬间**若 rows 为空（或条数骤减），
+  //	  pages 变成 1 ⇒ 页码被**永久**夹到 1，之后再怎么翻都会被拉回。
+  //	  用户看到的是"自动跳回第一页"，而且找不回原来的位置。
+  //
+  //	修法：空数据时**保留用户的原页码**（total == 0 时 pages 无意义）。
+  //	数据真的变少（非空但页数不够）时仍夹取 —— 那种情况回退是对的。
   function pageSlice(rows, page) {
     var total = rows.length;
     var pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-    var p = Math.min(Math.max(1, page), pages);
+    // 空数据：不夹取页码，原样返回用户选的页（避免"永久跳回第 1 页"）。
+    var p = total === 0 ? Math.max(1, page) : Math.min(Math.max(1, page), pages);
     var start = (p - 1) * PAGE_SIZE;
     return {
       rows: rows.slice(start, start + PAGE_SIZE),
@@ -1329,25 +1341,18 @@
     var html = '';
     for (var i = 0; i < info.rows.length; i++) {
       var m = info.rows[i];
-      // 缓存命中率由后端算好（cache_hit_rate）。
+      // 列已按委托方 2026-10-09 要求砍到 4 列：
+      //   模型 / 调用 / Tokens / 积分
+      // 「缓存命中率」列删除 —— 原话：「模型用量和账号用量可以删除命中缓存率
+      //   留更多空间将模型名和账号名一行显示」。腾出的宽度给模型名，
+      // 让它**一行显示完整**（原来被截成 `workbuddy/deepseek-v4.1-fla…`）。
       //
-      // 🔴 null 表示**无样本**（该模型还没被调用过），显示 —；
-      //    0 表示**真实 0%**（调用过但一次都没命中），显示 0.0%。
-      //    两者含义完全不同 —— 把"没调用过"显示成 0% 会让人
-      //    以为缓存完全没生效（Codex 第 40 轮指出，后端已用 null 区分）。
-      var rate = m.cache_hit_rate;
-      var hitHtml = (rate === null || rate === undefined)
-        ? '—'
-        : (Number(rate) * 100).toFixed(1) + '%';
-      // 列已按委托方要求砍到 5 列：模型 / 调用 / Tokens / 缓存命中率 / 积分。
-      // 「输入」「输出」两列删除，「合计」改名为「Tokens」（2026-10-09）。
-      // 仍需用后端的 total_tokens（与顶部卡片同口径），不在前端相加 ——
-      // 相加会掩盖"上游没给 usage"的差异（那种情况 token 记 0）。
+      // ⚠️ 仍需用后端的 total_tokens（与顶部卡片同口径），不在前端相加 ——
+      //	相加会掩盖"上游没给 usage"的差异（那种情况 token 记 0）。
       html += '<tr>'
-        + '<td class="mono" title="' + esc(m.model) + '">' + esc(m.model) + '</td>'
+        + '<td class="mono">' + esc(m.model) + '</td>'
         + '<td class="num">' + fmtInt(m.requests) + '</td>'
         + '<td class="num">' + fmtNum(m.total_tokens) + '</td>'
-        + '<td class="num">' + hitHtml + '</td>'
         + '<td class="num">' + (m.credits === null || m.credits === undefined ? '—' : Number(m.credits).toFixed(2)) + '</td>'
         + '</tr>';
     }
@@ -1396,18 +1401,12 @@
         nameHtml = '<td class="mono" title="该账号已不在账号管理中（可能已删除）">' +
           esc(a.account) + '</td>';
       }
-      // 缓存命中率：后端未给（分母为 0）时显示 —，不是 0%
-      var rate = a.cache_hit_rate;
-      var hitHtml = (rate === null || rate === undefined)
-        ? '—'
-        : (Number(rate) * 100).toFixed(1) + '%';
-      // ⚠️ 「成功」「失败」两列已按委托方要求删除（信息量低）。
-      // 2026-10-09 再按要求砍列：删「输入」「输出」，「合计」改名「Tokens」。
+      // 缓存命中率列已删除（2026-10-09 委托方要求），腾出宽度给账号名。
+      // 平台标签保留：它是区分同名账号的唯一线索（国际版紫色「国际版」）。
       html += '<tr>'
         + nameHtml
         + '<td class="num">' + fmtInt(a.requests) + '</td>'
         + '<td class="num">' + fmtNum(a.total_tokens) + '</td>'
-        + '<td class="num">' + hitHtml + '</td>'
         + '<td class="num">' + (a.credits === null || a.credits === undefined ? '—' : Number(a.credits).toFixed(2)) + '</td>'
         + '</tr>';
     }
@@ -1479,35 +1478,53 @@
         ? esc(e.nickname) + platTagOf(e.platform)
         : '<span class="mono" title="账号已不在管理中">' + esc(e.account) + '</span>';
 
-      // Tokens：本次调用的总 token。
+      // Tokens：**输入 / 输出**（2026-10-09 委托方澄清）。
       //
-      // 🔴 显示**纯数字 + 千分位**，不做「万/亿」缩写
-      //	（2026-10-09 委托方明确要求「记得显示纯数字，120000而不是12w」）。
+      // 🔴 委托方原话：「调用记录Tokens我说过内容是输入/输出，你现在只有输入」。
+      //
+      //	此前我按"合计改名 Tokens"实现，只显示 total_tokens —— 那是
+      //	理解错了：他要的是**两个数并排**（输入 prompt / 输出 completion），
+      //	合计值本身可以从这两个数一眼看出来，而"输入多少、输出多少"
+      //	是拆不开的信息（同一个总 token 数可能是"长输入短输出"或反之）。
+      //
+      // ⚠️ 显示**纯数字 + 千分位**（委托方：「120000而不是12w」）。
       //	明细行的用途是对账，缩写的数字没法核对。
-      //
       // ⚠️ 上游没给 usage 时显示 —，**不能显示 0** ——
       //	"没拿到"与"确实是 0"含义不同（见 usage.Event.UsageKnown 的注释）。
-      var tokHtml = e.usage_known ? fmtNumExact(e.total_tokens) : '—';
+      var tokHtml;
+      if (e.usage_known) {
+        tokHtml = '<span class="tok-pair">' + fmtNumExact(e.prompt_tokens) +
+          '<span class="tok-sep">/</span>' + fmtNumExact(e.completion_tokens) + '</span>';
+      } else {
+        tokHtml = '—';
+      }
+
+      // 缓存命中率（本次调用）—— 委托方要求放在 Tokens 右边。
+      // 无缓存数据时显示 —（不是 0%）：两种含义不同。
+      var rate = e.cache_hit_rate;
+      var hitHtml = (rate === null || rate === undefined)
+        ? '—'
+        : (Number(rate) * 100).toFixed(1) + '%';
 
       var creditHtml = (e.credits === null || e.credits === undefined)
         ? '—'
         : Number(e.credits).toFixed(2);
 
-      // 首字耗时（TTFT）—— 独立成列。
+      // 首字/耗时**合并为一列**：`0.6s / 40.0s`（2026-10-09 委托方要求）。
       //
-      // 🔴 此前的 bug（2026-10-09 已修，后端部分）：chat.go 原先在
-      //	`TryChat` **之后**才构造记账器，而 TryChat 会阻塞到上游首个
-      //	事件到达 ⇒ 量到的只是「TryChat 返回 → 写首帧」那几毫秒，
-      //	**整列恒为 0ms**。
-      //	现在起点提到 TryChat 之前（见 chat.go 的 reqStart），
-      //	这一列才是真正的"从用户发出请求到看见第一个字"。
+      // 🔴 为什么合并：原来拆成两列占两个列位，而两列各自只有 4-5 个字符，
+      //	列数过多反而让每列都窄。合并后省下一列给模型名（那列最容易超宽）。
       //
-      // ⚠️ 非流式仍然是 `—`：非流式要收齐才返回，"首字"与"完成"本就是
-      //	同一刻，后端不在该路径采集它（留 nil）。这是**如实留空**，
-      //	不是"没测到"——所以不要为了好看给它填 0 或总耗时。
-      var ttftHtml = (e.ttft_ms === null || e.ttft_ms === undefined)
+      //	⚠️ 首字用**绿色**（委托方明确要求）—— 它是用户体感的那一项
+      //	  （"多久开始出字"），耗时是次要信息用灰。
+      //
+      // ⚠️ 非流式没有"首字"语义（要收齐才返回）⇒ 首字位置显示 —，
+      //	格式仍保持 `— / 总耗时`，让两列竖着能对齐。
+      var ttftPart = (e.ttft_ms === null || e.ttft_ms === undefined)
         ? '—'
-        : fmtDur(e.ttft_ms);
+        : '<span class="ttft">' + fmtDur(e.ttft_ms) + '</span>';
+      var durHtml = '<span class="dur-pair">' + ttftPart +
+        '<span class="dur-sep">/</span>' + fmtDur(e.duration_ms) + '</span>';
 
       // 流：保留流/非流标识 + 吞吐（t/s）。
       var streamHtml;
@@ -1525,7 +1542,7 @@
       }
 
       // 🔴 「状态」列已按委托方要求删除（2026-10-09 要求的列序里没有它）。
-      //	但**失败信息不能丢** —— 失败时给整行加一个左边框色标 + 标题提示，
+      //	但**失败信息不能丢** —— 失败时给整行加左边框色标 + 标题提示，
       //	这样"哪次调用出问题了"仍然一眼可见，只是不再占一整列。
       var rowBad = '';
       var rowTitle = '';
@@ -1536,15 +1553,16 @@
           : ('调用失败：' + (e.error || e.status || '未知原因'))) + '"';
       }
 
-      // 列序（委托方指定）：时间 → 账号 → 模型 → 流 → Tokens → 首字 → 耗时 → 积分
+      // 列序（委托方指定）：
+      //   时间 → 账号 → 模型 → 流 → Tokens(输入/输出) → 缓存命中率 → 首字/耗时 → 积分
       html += '<tr' + rowBad + rowTitle + '>'
         + '<td class="mono">' + esc(e.time || '') + '</td>'
         + '<td>' + nameHtml + '</td>'
-        + '<td class="mono" title="' + esc(e.model || '') + '">' + esc(e.model || '') + '</td>'
+        + '<td class="mono">' + esc(e.model || '') + '</td>'
         + '<td>' + streamHtml + '</td>'
         + '<td class="num">' + tokHtml + '</td>'
-        + '<td class="num">' + ttftHtml + '</td>'
-        + '<td class="num">' + fmtDur(e.duration_ms) + '</td>'
+        + '<td class="num">' + hitHtml + '</td>'
+        + '<td class="num">' + durHtml + '</td>'
         + '<td class="num">' + creditHtml + '</td>'
         + '</tr>';
     }
@@ -2027,10 +2045,28 @@
 
   var timer = null;
 
-  // 需要定时轮询的页面。API 接入页【不轮询】——
-  // 模型目录几乎不变，轮询只会让列表无谓重排（委托方反馈：顺序乱跳）；
-  // 改为进入页面时拉一次 + 手动「刷新」按钮。
-  var POLLED_PAGES = { accounts: true, stats: true };
+  // 需要定时轮询的页面。
+  //
+  // 🔴 用量统计页**已取消自动轮询**（2026-10-09 委托方要求）。
+  //
+  //	委托方原话：「取消调用记录自动刷新，只需要我进入调用记录页面
+  //	自动刷新一次就过来，后续我可以去其他页面再回来调用记录刷新
+  //	或者直接点击刷新按钮手动刷新。」
+  //
+  //	为什么这个要求是对的（不只是习惯问题）：
+  //	  1. 5 秒轮询会把整张表重建一次，用户正在看的行会跳动；
+  //	     更糟的是它触发了一个真 bug（见 pageSlice 的说明）——
+  //	     数据在那一瞬间变少时，页码被**永久夹到第 1 页**，
+  //	     表现就是"我翻到第 5 页，过几秒自动回到第 1 页"。
+  //	  2. 进页面刷新一次已足够：记录是**服务端在调用时就落盘**的
+  //	     （不经浏览器），所以"不轮询"**不会丢任何记录**，
+  //	     只影响"你看到的快照有多新"。
+  //
+  //	⚠️ 账号管理页**仍然轮询** —— 它的额度/签到状态会变化，
+  //	  且那张表没有分页，重建不会打断用户操作。
+  //
+  //	API 接入页本来就不轮询（模型目录几乎不变，轮询只会让列表重排）。
+  var POLLED_PAGES = { accounts: true };
 
   function tick() {
     loadStatus();     // 顶栏信息所有页都用
