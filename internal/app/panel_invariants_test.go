@@ -232,3 +232,58 @@ func TestPanelTokenNumberFormatting(t *testing.T) {
 			"必须显示纯数字（委托方：「120000而不是12w」）")
 	}
 }
+
+// TestPanelDurationUsesSecondsOnly 守：首字与耗时两列**统一用秒**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方 2026-10-09 要求：「将首字和耗时单位改为s」
+// ═══════════════════════════════════════════════════════════════════
+//
+//	原实现是**分段混单位**的：<1s 显示 `480ms`、<60s 显示 `43.0s`、
+//	≥60s 显示 `1m35s`。后果是同一列里三种量纲并存 ——
+//	而这两列存在的意义正是"竖着比较哪次更快"，混单位直接毁掉该用途
+//	（得先看单位再心算才能比大小）。
+//
+//	⇒ 现在一律 `(ms/1000).toFixed(1) + 's'`：
+//	  480 → 0.5s、2124 → 2.1s、95000 → 95.0s。
+//
+// 本测试守住三件事，缺一不可：
+//  1. fmtDur 仍在（两列都用它，不能在某一列里内联别的写法）
+//  2. 输出单位只有 's'（不许再出现 ms / m 分支）
+//  3. 两列（首字 ttft_ms、耗时 duration_ms）都走 fmtDur
+//
+// 反向对照：把 fmtDur 改回 `if (n < 1000) return n + 'ms'`，本条立刻红。
+func TestPanelDurationUsesSecondsOnly(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+
+	if !strings.Contains(js, "function fmtDur(") {
+		t.Fatal("缺少 fmtDur —— 首字/耗时两列共用它格式化")
+	}
+
+	body := funcBody(t, js, "fmtDur")
+
+	// ① 必须输出 's'
+	if !strings.Contains(body, "'s'") {
+		t.Error("fmtDur 没有输出秒单位 's'")
+	}
+	// ② 不许再有 ms / m 两个分支（那正是"混单位"的来源）
+	for _, bad := range []string{"'ms'", "'m'"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("fmtDur 里仍有 %s 单位分支 —— 委托方要求统一改为 s；"+
+				"混单位会让这一列无法直接比大小", bad)
+		}
+	}
+	// ③ 不许出现分钟换算（m + s 的进位逻辑）
+	if strings.Contains(body, "60000") {
+		t.Error("fmtDur 里仍有分钟换算（60000）—— 已要求统一用秒，" +
+			"95 秒就该显示 95.0s，不要换成 1m35s")
+	}
+
+	// ④ 两列都必须走 fmtDur
+	seg := funcBody(t, js, "drawUsageLog")
+	for _, want := range []string{"fmtDur(e.ttft_ms)", "fmtDur(e.duration_ms)"} {
+		if !strings.Contains(seg, want) {
+			t.Errorf("drawUsageLog 里缺少 %s —— 首字与耗时两列都要用统一的秒格式", want)
+		}
+	}
+}
