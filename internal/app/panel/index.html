@@ -230,95 +230,41 @@
           <button type="button" class="btn btn-sm" id="btn-copy-key">复制</button>
         </div>
 
-        <!-- 🔴 明确列出**实际支持**的端点（2026-10-09 委托方要求）。
-             原话：「把支持的协议写这里，其他协议不能用
-                    http://127.0.0.1:4545/v1 吧。」
-             为什么要写死这张表：`/v1` 只是一个前缀，不是"任何 OpenAI/Anthropic
-             端点都能用"。用户拿别的客户端过来试 `/v1/completions`、
-             `/v1/embeddings` 之类会拿到 404，却不知道是"本服务没实现"
-             还是"自己配错了"。把白名单摆在面板上，直接消除这种猜疑。
-             ⚠️ 这张表必须与 server.go 里 mux 的注册**一一对应** ——
-                有测试（TestPanelApiEndpointListMatchesRoutes）守着，别只改一边。 -->
-        <div class="api-endpoints">
-          <div class="api-endpoints-title">支持的端点（其余 <code>/v1/*</code> 路径一律 404）</div>
-          <table class="tbl">
-            <thead>
-              <tr><th>方法</th><th>路径</th><th>协议</th><th>说明</th></tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="mono">POST</td>
-                <td class="mono">/v1/chat/completions</td>
-                <td>OpenAI Chat</td>
-                <td>最常用；DSH / 各类 OpenAI 兼容客户端</td>
-              </tr>
-              <tr>
-                <td class="mono">POST</td>
-                <td class="mono">/v1/messages</td>
-                <td>Anthropic Messages</td>
-                <td>Claude Code / Anthropic SDK，支持流式与工具调用</td>
-              </tr>
-              <tr>
-                <td class="mono">POST</td>
-                <td class="mono">/v1/messages/count_tokens</td>
-                <td>Anthropic</td>
-                <td>token 计数（Anthropic SDK 会主动调用）</td>
-              </tr>
-              <tr>
-                <td class="mono">POST</td>
-                <td class="mono">/v1/responses</td>
-                <td>OpenAI Responses</td>
-                <td>新版 Responses API</td>
-              </tr>
-              <tr>
-                <td class="mono">GET</td>
-                <td class="mono">/v1/models</td>
-                <td>OpenAI</td>
-                <td>列出可用模型</td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="hint-text" style="margin-top:8px;">
-            鉴权：<code>/v1/chat/completions</code>、<code>/v1/models</code> 用
-            <code>Authorization: Bearer &lt;API Key&gt;</code>；
-            <code>/v1/messages</code>、<code>/v1/messages/count_tokens</code>、
-            <code>/v1/responses</code> 同时接受 <code>x-api-key</code> 与 <code>Bearer</code>。
-          </div>
+        <!-- 🔴 支持的协议 + base_url 例外（2026-10-09 委托方要求"只写支持哪些
+              协议和特殊情况的"，不要重复解释、不要重复写协议）。
 
-          <!-- 🔴 各 SDK 对 base_url 的拼接约定**不同**，这是最常见的配置错误
-               （2026-10-09 委托方提问"能不能所有协议都用同一个 /v1 基址"）。
-               实测（本机 0.1.10）：
-                 OpenAI SDK    base_url 写 .../v1  → 追加 /chat/completions ✓
-                 Anthropic SDK base_url **不带 /v1** → 追加 /v1/messages   ✓
-                 若 Anthropic 也写 .../v1 → 拼成 /v1/v1/messages → **404**
-               两边"看起来对称"的写法其实只有一个是错的，所以必须写在面板上。 -->
-          <div class="api-endpoints-title" style="margin-top:16px;">客户端 base_url 怎么填（三种协议共用一个服务，但基址不同）</div>
+              为什么要写：`/v1` 只是前缀，不是"任何端点都能用" —— 用户拿
+              `/v1/completions` 之类来试会 404，却分不清是"服务没实现"
+              还是"自己配错了"。把白名单摆出来即可。
+
+              ⚠️ 只有**一个**特殊情况值得写：Anthropic SDK 的 base_url
+                 **不带 /v1**（它自己会追加），带了会拼成 /v1/v1/messages。
+                 其余 SDK 一律填 .../v1。
+
+              ⚠️ 路径必须与 server.go 里 mux 的注册一一对应 ——
+                 有测试（TestPanelApiEndpointListMatchesRoutes）守着。 -->
+        <div class="api-endpoints">
+          <div class="api-endpoints-title">支持的协议（其余 <code>/v1/*</code> 一律 404）</div>
           <table class="tbl">
             <thead>
-              <tr><th>客户端 / SDK</th><th>base_url 填什么</th><th>SDK 自动追加</th></tr>
+              <tr><th>协议</th><th>路径</th></tr>
             </thead>
             <tbody>
-              <tr>
-                <td>OpenAI 兼容（含 DSH）</td>
-                <td class="mono">http://127.0.0.1:4545/v1</td>
-                <td class="mono">/chat/completions</td>
-              </tr>
-              <tr>
-                <td>OpenAI Responses</td>
-                <td class="mono">http://127.0.0.1:4545/v1</td>
-                <td class="mono">/responses</td>
-              </tr>
-              <tr>
-                <td><b>Anthropic</b>（Claude Code 等）</td>
-                <td class="mono">http://127.0.0.1:4545</td>
-                <td class="mono">/v1/messages</td>
-              </tr>
+              <tr><td>OpenAI Chat</td><td class="mono">/v1/chat/completions</td></tr>
+              <tr><td>OpenAI Responses</td><td class="mono">/v1/responses</td></tr>
+              <tr><td>Anthropic Messages</td><td class="mono">/v1/messages</td></tr>
+              <tr><td>Anthropic 计数</td><td class="mono">/v1/messages/count_tokens</td></tr>
+              <tr><td>模型列表</td><td class="mono">/v1/models</td></tr>
             </tbody>
           </table>
           <div class="hint-text" style="margin-top:8px;">
-            ⚠️ Anthropic SDK 的 base_url <b>不要带 <code>/v1</code></b> ——
-            它自己会追加，带了会拼成 <code>/v1/v1/messages</code> 而 404。
-            （Claude Code 用环境变量 <code>ANTHROPIC_BASE_URL=http://127.0.0.1:4545</code>）
+            <b>base_url</b>：OpenAI 系填 <code id="api-base-openai">…/v1</code>；
+            <b>Anthropic 系填</b> <code id="api-base-anthropic">…</code>
+            <span class="api-warn">← 不带 <code>/v1</code>，它自己追加；带了会 404</span>
+          </div>
+          <div class="hint-text" style="margin-top:4px;">
+            <b>鉴权</b>：<code>Authorization: Bearer &lt;API Key&gt;</code> 或
+            <code>x-api-key: &lt;API Key&gt;</code>（两者都接受）
           </div>
         </div>
       </section>
@@ -514,6 +460,10 @@
             </div>
             <span class="hint-text st-hint-block">
               无账号时显示「—」（不会执行、也不会发上游请求）。单账号的签到日期见「账号管理」页。
+              <br>
+              ⚠️ <b>成功数比账号数少是正常的</b>：<b>国际版账号不参与签到</b>
+              （上游没有签到活动，实测调用会返回"签到活动未开启或已过期"），
+              所以 4 个账号里若有 1 个国际版，这里就会显示「3 个成功」。
             </span>
           </div>
         </div>

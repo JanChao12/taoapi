@@ -304,11 +304,14 @@ body {
 .api-base-row { flex-wrap: wrap; }
 .api-label-gap { margin-left: 18px; }
 
-/* 支持的端点表（2026-10-09 委托方要求把支持的协议写在页面上）。 */
+/* 支持的协议 / base_url 例外（2026-10-09 委托方要求只写必要的，不重复）。 */
 .api-endpoints { margin-top: 18px; }
 .api-endpoints-title { font-size: 13px; color: #4a5058; margin-bottom: 8px; }
 .api-endpoints .tbl { border: 1px solid #eef0f3; border-radius: 8px; overflow: hidden; }
 .api-endpoints .tbl th { background: #fafbfc; }
+/* 「不带 /v1」那句例外必须显眼 —— 它是最容易配错的一处，
+   混在灰字里会被跳过。 */
+.api-warn { color: #b45309; }
 
 /* 通用隐藏类：只控制 .page 的那个不够用（警示条等非页面元素也要能隐藏）。
    用 !important 是刻意的 —— 这些元素可能带 display 的其它规则，
@@ -447,14 +450,25 @@ body {
 .tbl-log th, .tbl-log td,
 .tbl-wide th, .tbl-wide td { white-space: nowrap; }
 
-/* 左表右图（模型用量 / 账号用量）：列表宽度减半，右侧画趋势图。
-   委托方原话：「列表右边用来生成图5图6这种可视化」。
-   ⚠️ 已按委托方要求删掉「缓存命中率」列，腾出的空间给模型名/账号名
-      —— 那两列本来就最容易超宽。 */
-.table-chart { display: flex; gap: 18px; align-items: flex-start; }
-.table-chart-tbl { flex: 1 1 54%; min-width: 0; }
+/* 模型/账号用量表：列表只占页面 4 成，所以内部要**省着用宽度**
+   （委托方：「通过缩减他的长度和间隔长度，实现列表只占 4 成长度」）。
+   · 收窄左右内边距（8px → 4px）
+   · 模型名/账号名用更小的等宽字号（13px → 11px）
+   · 表头也跟着缩，避免表头比数据宽
+   这几项合起来省下约 20% 宽度，让 40% 的列装得下完整模型名。 */
+.tbl-wide th, .tbl-wide td { padding: 6px 4px; }
+.tbl-wide th { font-size: 11px; }
+.tbl-wide td.mono { font-size: 11px; }
+
+/* 左表右图（模型用量 / 账号用量）。
+   委托方 2026-10-09 要求「列表只占 4 成长度，右边的图表占 6 成长度」。
+   ⚠️ 之前是 54% / 46% —— 表太宽而图太窄，折线被压得看不清趋势。
+   表里的模型名/账号名本来就长，所以表这边**同时**要靠
+   white-space: nowrap + 缩小的行内边距把宽度用足（见 .tbl-wide）。 */
+.table-chart { display: flex; gap: 16px; align-items: flex-start; }
+.table-chart-tbl { flex: 0 0 40%; max-width: 40%; min-width: 0; }
 .table-chart-fig {
-  flex: 1 1 46%;
+  flex: 1 1 auto;
   min-width: 0;
   border: 1px solid #eef0f3;
   border-radius: 10px;

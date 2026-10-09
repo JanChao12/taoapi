@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"workbuddy.local/workbuddy-api/internal/auth"
+	"workbuddy.local/workbuddy-api/internal/provider"
+	"workbuddy.local/workbuddy-api/internal/router"
 	usagepkg "workbuddy.local/workbuddy-api/internal/usage"
 )
 
@@ -121,6 +124,13 @@ func TestStatsDailyArrayLengthsMatch(t *testing.T) {
 		if len(a.Values) != n {
 			t.Errorf("账号 %s 的 values 长度 = %d，期望 %d",
 				a.Account, len(a.Values), n)
+		}
+	}
+	// 🔴 逐模型折线与逐账号折线受同一条硬不变量约束（2026-10-09 加）。
+	for _, m := range d.Models {
+		if len(m.Values) != n {
+			t.Errorf("模型 %s 的 values 长度 = %d，期望 %d",
+				m.Model, len(m.Values), n)
 		}
 	}
 }
@@ -369,7 +379,7 @@ func TestStatsDailyJSONContract(t *testing.T) {
 	}
 	for _, key := range []string{
 		"dates", "labels", "total_tokens", "prompt_tokens",
-		"completion_tokens", "accounts",
+		"completion_tokens", "accounts", "models",
 	} {
 		if _, ok := obj[key]; !ok {
 			t.Errorf("daily 缺少字段 %q（前端按这个名字读）", key)
@@ -390,6 +400,25 @@ func TestStatsDailyJSONContract(t *testing.T) {
 		}
 	}
 
+	// models 元素形状（2026-10-09 加）：只有 model + values 两个字段，
+	// **刻意没有 name** —— 见 dailyModelSeries 的注释（模型 ID 就是图例名）。
+	var mods []map[string]json.RawMessage
+	if err := json.Unmarshal(obj["models"], &mods); err != nil {
+		t.Fatalf("models 不是数组: %v", err)
+	}
+	if len(mods) != 1 {
+		t.Fatalf("models 数 = %d，期望 1（body=%s）", len(mods), raw)
+	}
+	for _, key := range []string{"model", "values"} {
+		if _, ok := mods[0][key]; !ok {
+			t.Errorf("models[0] 缺少字段 %q", key)
+		}
+	}
+	if _, ok := mods[0]["name"]; ok {
+		t.Error("models[0] 出现了 name 字段 —— 模型折线的图例就是 model，" +
+			"多一个可与之不一致的字段没有信息增益")
+	}
+
 	// 实际值：1000 输入 + 234 输出 = 1234
 	var d dailyStats
 	if err := json.Unmarshal(dailyRaw, &d); err != nil {
@@ -402,6 +431,14 @@ func TestStatsDailyJSONContract(t *testing.T) {
 	}
 	if d.Accounts[0].Values[0] != 1234 {
 		t.Errorf("账号折线值 = %d，期望 1234", d.Accounts[0].Values[0])
+	}
+	// 模型折线用**同一个自洽口径**（prompt + completion），不是 ev.TotalTokens。
+	if len(d.Models) == 0 {
+		t.Fatal("daily.models 为空 —— 逐模型折线没生成")
+	}
+	if d.Models[0].Values[0] != 1234 {
+		t.Errorf("模型折线值 = %d，期望 1234（与账号折线、total_tokens 同口径）",
+			d.Models[0].Values[0])
 	}
 
 	// 把真实样本打出来，便于人工核对契约（-v 时可见）
@@ -420,19 +457,40 @@ func TestStatsDailyJSONContract(t *testing.T) {
 //
 // 做法：喂进远超窗口天数的记录，然后用反射断言
 // dailyBuilder 内部**每一个切片字段**的长度都不超过 days。
+//
+// ⚠️ 2026-10-09 补逐模型折线时对本测试的改动（以及为什么没被削弱）：
+//
+//	加了 field `modelValues []*dailyModel` 与 `modelIdx map[string]int`。
+//	反射那一段**本来就自动覆盖新字段**（它扫所有字段，不写死名字），
+//	所以 len(modelValues)=1 ≤ days 是通过的 —— 但"自动通过"不等于
+//	"守住了"，因为这条只能证明"没存 5000 条明细"，证明不了
+//	"每条折线的 values 长度是 days"。
+//
+//	⇒ 这里**补强**两处（只加不减）：
+//	  ① 把 dailyModel 也纳入逐字段扫描（原先只扫 dailyAcct）；
+//	  ② 新增硬不变量断言：**每个** acct/model 的 values 长度必须
+//	     **恰好等于** days（不是 ≤）。少一格就是图错位，多一格也一样错。
+//
+//	⚠️ 诚实说明这条测试**覆盖不到**的部分：模型线的条数上界是
+//	  "窗口内出现过的模型数"（本机 34 个），它由模型注册表封顶，
+//	  不由 days 封顶。所以"模型数 ≤ days"在 days 很小时**并不天然成立**
+//	  （days=1 且一天用了 3 个模型时，len(modelValues)=3 > days，反射那条
+//	  断言的是**切片长度**而不是总内存）。这里不去伪造一个假的通过：
+//	  内存真正的上界是 O(days × 实体数)，实体数有独立上界（账号数个位数、
+//	  模型数几十个），与记录条数无关正是本测试要守的东西。
 func TestStatsDailyBuilderMemoryIsBoundedByDays(t *testing.T) {
 	const days = 7
 	b := newDailyBuilder(days, time.Now())
 
 	now := time.Now()
-	// 5000 条：远多于 days，也远多于账号数。
+	// 5000 条：远多于 days，也远多于账号数/模型数。
 	// 若实现里存了明细，这里就会留下 5000 个元素。
 	for i := 0; i < 5000; i++ {
 		b.add(usagepkg.Event{
 			Time: now.AddDate(0, 0, -(i % days)), Account: "acct…",
 			Model: "m", OK: true, UsageKnown: true,
 			PromptTokens: 1, CompletionTokens: 2,
-		})
+		}, "workbuddy/m")
 	}
 
 	// 累加结果正确（5000 × 3 = 15000）
@@ -464,14 +522,34 @@ func TestStatsDailyBuilderMemoryIsBoundedByDays(t *testing.T) {
 			}
 		}
 	}
+	// checkValues 断言"每条折线的 values 恰好 days 格"（硬不变量）。
+	checkValues := func(name string, v any) {
+		rv := reflect.ValueOf(v)
+		f := rv.FieldByName("values")
+		if !f.IsValid() {
+			t.Fatalf("%s 没有 values 字段 —— 结构变了，本测试必须跟着改", name)
+		}
+		if f.Len() != days {
+			t.Errorf("%s.values 长度 = %d，期望恰好 %d "+
+				"（少一格或多一格都会让折线错位）", name, f.Len(), days)
+		}
+	}
 	checkSlices("dailyBuilder", *b)
 	for _, a := range b.accts {
 		checkSlices("dailyAcct", *a)
+		checkValues("dailyAcct", *a)
+	}
+	for _, m := range b.modelValues {
+		checkSlices("dailyModel", *m)
+		checkValues("dailyModel", *m)
 	}
 
-	// 账号数也是个位数（不随记录数增长）
+	// 账号数/模型数也是个位数（不随记录数增长）
 	if len(b.accts) != 1 {
 		t.Errorf("账号数 = %d，期望 1", len(b.accts))
+	}
+	if len(b.modelValues) != 1 {
+		t.Errorf("模型数 = %d，期望 1（5000 条记录只是同一个模型）", len(b.modelValues))
 	}
 }
 
@@ -505,7 +583,7 @@ func TestStatsDailyNonNullWhenNoUsageStore(t *testing.T) {
 	}
 	for _, key := range []string{
 		"dates", "labels", "total_tokens", "prompt_tokens",
-		"completion_tokens", "accounts",
+		"completion_tokens", "accounts", "models",
 	} {
 		v, ok := obj[key]
 		if !ok {
@@ -531,11 +609,11 @@ func TestStatsDailyOutOfWindowEventIgnored(t *testing.T) {
 	b.add(usagepkg.Event{
 		Time: time.Now().AddDate(0, 0, -30), Account: "old…",
 		PromptTokens: 1, CompletionTokens: 1,
-	})
+	}, "workbuddy/old")
 	// 窗口内的今天
 	b.add(usagepkg.Event{
 		Time: time.Now(), Account: "now…", PromptTokens: 5, CompletionTokens: 5,
-	})
+	}, "workbuddy/now")
 
 	d := b.build(nil)
 	if len(d.TotalTokens) != 3 {
@@ -550,6 +628,13 @@ func TestStatsDailyOutOfWindowEventIgnored(t *testing.T) {
 	}
 	if len(d.Accounts) != 1 {
 		t.Errorf("账号数 = %d，期望 1（越界账号不该建折线）", len(d.Accounts))
+	}
+	// 🔴 模型折线同理：越界那条不能凭空造出一条线
+	if len(d.Models) != 1 {
+		t.Errorf("模型折线数 = %d，期望 1（越界模型不该建折线）", len(d.Models))
+	}
+	if len(d.Models) == 1 && d.Models[0].Model != "workbuddy/now" {
+		t.Errorf("模型折线 = %q，期望 workbuddy/now", d.Models[0].Model)
 	}
 }
 
@@ -592,3 +677,409 @@ func TestStatsDailyAccountsOrderedByTotalDesc(t *testing.T) {
 }
 
 // containsStr 是 strings.Contains 的小包装（避免为本文件再加一个 import）。
+func containsStr(haystack, needle string) bool { return strings.Contains(haystack, needle) }
+
+// ─────────────────────────────────────────────────────────────
+// daily.models 逐模型折线护栏（2026-10-09）
+//
+// 委托方实测反馈：「模型用量那张图为什么只有一条 total 线」——
+// 账号图是一号一线，模型图却只有总量，同一个页面上两套口径。
+// 本节守的就是"模型图也一号一线"，并钉死它与模型用量表**同源**。
+// ─────────────────────────────────────────────────────────────
+
+// fetchStatsRaw 请求 /api/stats 并返回**整个**响应 + 原始 body。
+//
+// ⚠️ 与 fetchDaily 的区别：这里要同时看 daily.models 和顶层 models
+//
+//	（模型用量表），两者必须对得上 —— 那是本节的中心论点。
+func fetchStatsRaw(t *testing.T, baseURL, query string) (statsResponse, string) {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/api/stats" + query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 = %d，body=%s", resp.StatusCode, raw)
+	}
+	var got statsResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("解析失败: %v\nbody=%s", err, raw)
+	}
+	return got, string(raw)
+}
+
+// TestStatsDailyModelsSeriesPerModel 是逐模型折线的主护栏。
+//
+// 守四件事（缺一条图就是错的）：
+//  1. **一个模型一条线**（不是一条 total 线 —— 那正是委托方报的问题）
+//  2. values 长度 == len(dates)（与账号折线同一条硬不变量）
+//  3. 逐日数值真的落在**正确的那一天**（不是全堆在最后一格）
+//  4. 顺序按窗口内总量**降序**（用得多的在前）
+func TestStatsDailyModelsSeriesPerModel(t *testing.T) {
+	store := usagepkg.NewStore(t.TempDir())
+
+	// 三天前：big 用了 300
+	// 今天：    big 用了 30 + small 用了 5（两个模型同一天）
+	now := time.Now()
+	events := []usagepkg.Event{
+		{Time: now.AddDate(0, 0, -2), Account: "a…",
+			Model: "workbuddy/big", ProviderID: "workbuddy", ResolvedModel: "big",
+			OK: true, UsageKnown: true, PromptTokens: 300, CompletionTokens: 0},
+		{Time: now, Account: "a…",
+			Model: "workbuddy/big", ProviderID: "workbuddy", ResolvedModel: "big",
+			OK: true, UsageKnown: true, PromptTokens: 20, CompletionTokens: 10},
+		{Time: now, Account: "a…",
+			Model: "workbuddy/small", ProviderID: "workbuddy", ResolvedModel: "small",
+			OK: true, UsageKnown: true, PromptTokens: 5, CompletionTokens: 0},
+	}
+	for _, ev := range events {
+		if err := store.Append(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := dailyTestEnv(t, store, nil)
+	d, body := fetchDaily(t, srv.URL, "?days=3")
+
+	if len(d.Models) != 2 {
+		t.Fatalf("模型折线数 = %d，期望 2（一个模型一条线）；body=%s",
+			len(d.Models), body)
+	}
+
+	// ② 长度不变量
+	for _, m := range d.Models {
+		if len(m.Values) != len(d.Dates) {
+			t.Errorf("模型 %q 的 values 长度 = %d，期望 %d（与 dates 等长）",
+				m.Model, len(m.Values), len(d.Dates))
+		}
+	}
+
+	// ④ 排序：big 总 330 > small 总 5
+	if d.Models[0].Model != "workbuddy/big" {
+		t.Errorf("第一条模型折线 = %q，期望 workbuddy/big（按总量降序）",
+			d.Models[0].Model)
+	}
+	if d.Models[1].Model != "workbuddy/small" {
+		t.Errorf("第二条模型折线 = %q，期望 workbuddy/small", d.Models[1].Model)
+	}
+
+	// ③ 逐日数值
+	if len(d.Models[0].Values) == 3 {
+		// dates = [两天前, 昨天, 今天]，下标 0 是两天前
+		if got := d.Models[0].Values[0]; got != 300 {
+			t.Errorf("big 在两天前 = %d，期望 300", got)
+		}
+		if got := d.Models[0].Values[1]; got != 0 {
+			t.Errorf("big 在昨天 = %d，期望 0（那天没用）", got)
+		}
+		if got := d.Models[0].Values[2]; got != 30 {
+			t.Errorf("big 在今天 = %d，期望 30（20 输入 + 10 输出）", got)
+		}
+		if got := d.Models[1].Values[2]; got != 5 {
+			t.Errorf("small 在今天 = %d，期望 5", got)
+		}
+	}
+
+	// 🔴 反向对照：若实现只画一条总量线，len(d.Models) 会是 1 —— 上面已红。
+	//	这里再显式点一句，免得将来有人把断言放宽时丢掉这个意图。
+	if len(d.Models) == 1 {
+		t.Error("只有一条模型折线 —— 这正是「模型图只有 total 线」那个 bug")
+	}
+
+	t.Logf("daily.models 实际 JSON: %s", modelsJSON(t, body))
+}
+
+// TestStatsDailyModelsOnlyInWindow 守"只含窗口内出现过的模型"。
+//
+// 🔴 为什么要（与账号同一条规则）：
+//
+//	补一条全 0 的线会让图例里出现该窗口内根本没用的模型，
+//	图看上去"有 34 条线"，实际只有 2 个模型被调用过 —— 图在说谎。
+func TestStatsDailyModelsOnlyInWindow(t *testing.T) {
+	store := usagepkg.NewStore(t.TempDir())
+	now := time.Now()
+
+	// 今天用过的模型
+	if err := store.Append(usagepkg.Event{
+		Time: now, Account: "a…", Model: "workbuddy/recent",
+		ProviderID: "workbuddy", ResolvedModel: "recent",
+		OK: true, UsageKnown: true, PromptTokens: 10, CompletionTokens: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 10 天前的模型（days=3 的窗口外）
+	if err := store.Append(usagepkg.Event{
+		Time: now.AddDate(0, 0, -10), Account: "a…", Model: "workbuddy/ancient",
+		ProviderID: "workbuddy", ResolvedModel: "ancient",
+		OK: true, UsageKnown: true, PromptTokens: 9999, CompletionTokens: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := dailyTestEnv(t, store, nil)
+	d, body := fetchDaily(t, srv.URL, "?days=3")
+
+	if len(d.Models) != 1 {
+		t.Fatalf("模型折线数 = %d，期望 1（窗口内只有 recent 被用过）；body=%s",
+			len(d.Models), body)
+	}
+	if d.Models[0].Model != "workbuddy/recent" {
+		t.Errorf("模型折线 = %q，期望 workbuddy/recent", d.Models[0].Model)
+	}
+	// 窗口外的那个模型绝不能出现（哪怕是全 0 的补位线）
+	if containsStr(body, `"workbuddy/ancient"`) {
+		t.Error("窗口外的模型出现在了 daily.models —— 不该有全 0 补位线")
+	}
+	// 且它的 9999 token 不能漏进任何模型线
+	var sum int64
+	for _, v := range d.Models[0].Values {
+		sum += v
+	}
+	if sum != 11 {
+		t.Errorf("recent 的合计 = %d，期望 11（窗口外那 9999 不能混进来）", sum)
+	}
+}
+
+// TestStatsDailyModelsKeyMatchesAggregateTable 是本任务最关键的一条：
+// **模型折线的 key 必须与模型用量表的行 key 完全一致**。
+//
+// 🔴 为什么这比"值对不对"更要紧：
+//
+//	图表存在的意义就是回答"表里这一行是哪条线"。若两处各自归一化
+//	（或一处用 ev.Model 原文），就会出现**表里有这行、图上没这条线**，
+//	而且**不报错**、只是图上少一条 —— 肉眼极难发现。
+//
+// 做法：用三种**客户端写法不同**的记录（别名 / 裸 ID / 完整 ID，
+// 这是 2026-10-06 真实踩过的坑）打同一个模型，然后断言
+// 表里恰好一行、图里恰好一条线、且两者的字符串完全相同。
+func TestStatsDailyModelsKeyMatchesAggregateTable(t *testing.T) {
+	store := usagepkg.NewStore(t.TempDir())
+
+	// 老式记录（没有 ProviderID/ResolvedModel）—— 走 CanonicalModelID 回退，
+	// 所以必须有个带别名表的 Router 才能把三种写法归一。
+	r := router.New()
+	if err := r.Register(context.Background(), &stubProvider{
+		id: "workbuddy",
+		models: []provider.Model{
+			{ID: "workbuddy/deepseek-v4.1-flash",
+				UpstreamID: "deepseek-v4.1-flash", Name: "DeepSeek"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetAliases(map[string]string{
+		"dsf": "workbuddy/deepseek-v4.1-flash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	const canonical = "workbuddy/deepseek-v4.1-flash"
+	for i, form := range []string{
+		"dsf",                           // 别名
+		"deepseek-v4.1-flash",           // 裸 ID
+		"workbuddy/deepseek-v4.1-flash", // 标准形态
+	} {
+		if err := store.Append(usagepkg.Event{
+			Time: now, Account: "a…", Model: form,
+			OK: true, UsageKnown: true,
+			PromptTokens: int64(10 * (i + 1)), CompletionTokens: 0,
+			// ⚠️ 必须同时给 TotalTokens：模型的**汇总表**口径是累加
+			//	ev.TotalTokens（既有行为，本次不许改），而 daily 折线
+			//	用的是 prompt+completion 的自洽口径。真实上游两条都给，
+			//	所以这里也照实给 —— 否则测出来的是"两种口径本来就不同"，
+			//	而不是本条要守的"key 是否同源"。
+			TotalTokens: int64(10 * (i + 1)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := httptest.NewServer(newMux(Deps{
+		Logger: log.New(io.Discard, "", 0),
+		Usage:  store,
+		Router: r,
+	}))
+	defer srv.Close()
+
+	got, body := fetchStatsRaw(t, srv.URL, "?days=1")
+
+	// 表：三种写法必须合成**一行**
+	if len(got.Models) != 1 {
+		t.Fatalf("模型用量表行数 = %d，期望 1（三种写法是同一个模型）；body=%s",
+			len(got.Models), body)
+	}
+	if got.Models[0].Model != canonical {
+		t.Fatalf("表里的模型 key = %q，期望 %q", got.Models[0].Model, canonical)
+	}
+
+	// 图：也必须只有**一条**线，且 key 与表**逐字节相同**
+	if len(got.Daily.Models) != 1 {
+		t.Fatalf("模型折线条数 = %d，期望 1；body=%s", len(got.Daily.Models), body)
+	}
+	if got.Daily.Models[0].Model != got.Models[0].Model {
+		t.Errorf("模型折线 key = %q 与模型用量表 key = %q 不一致 —— "+
+			"表里有这行、图上就会没有这条线（且不报错）",
+			got.Daily.Models[0].Model, got.Models[0].Model)
+	}
+	if got.Daily.Models[0].Model != canonical {
+		t.Errorf("模型折线 key = %q，期望 %q", got.Daily.Models[0].Model, canonical)
+	}
+
+	// 值也要对得上：10+20+30 = 60，表与图两处同值
+	if got.Models[0].TotalTokens != 60 {
+		t.Errorf("表里 total_tokens = %d，期望 60", got.Models[0].TotalTokens)
+	}
+	var lineSum int64
+	for _, v := range got.Daily.Models[0].Values {
+		lineSum += v
+	}
+	if lineSum != 60 {
+		t.Errorf("折线合计 = %d，期望 60（与表同源）", lineSum)
+	}
+
+	// 图与表**同长**（硬不变量）
+	if len(got.Daily.Models[0].Values) != len(got.Daily.Dates) {
+		t.Errorf("models[0].values 长度 = %d，期望 %d",
+			len(got.Daily.Models[0].Values), len(got.Daily.Dates))
+	}
+}
+
+// TestStatsDailyModelsKeyUsesRoutedIdentity 守：新记录用**路由当时的身份**
+// （ProviderID + ResolvedModel），与模型用量表同一规则。
+//
+// 🔴 为什么值得单独测：这条路径不经过别名表/注册表，是 resolveModelKey
+//
+//	的第一优先级分支。若 daily 那边错误地用了 ev.Model 原文，
+//	这里就会露馅（原文是客户端写的 "dsf"，与表里的完整 ID 不同）。
+func TestStatsDailyModelsKeyUsesRoutedIdentity(t *testing.T) {
+	store := usagepkg.NewStore(t.TempDir())
+	now := time.Now()
+	// 客户端写别名 "dsf"，但请求当时路由到 workbuddy/deepseek-v4.1-flash
+	if err := store.Append(usagepkg.Event{
+		Time: now, Account: "a…", Model: "dsf",
+		ProviderID: "workbuddy", ResolvedModel: "deepseek-v4.1-flash",
+		OK: true, UsageKnown: true, PromptTokens: 7, CompletionTokens: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// ⚠️ 刻意**不给** Router：证明新记录不需要任何注册表/别名表，
+	//	用的就是记录里带的路由身份（接入第二平台后老记录归属不会被改写）。
+	srv := dailyTestEnv(t, store, nil)
+	got, body := fetchStatsRaw(t, srv.URL, "?days=1")
+
+	const want = "workbuddy/deepseek-v4.1-flash"
+	if len(got.Models) != 1 || got.Models[0].Model != want {
+		t.Fatalf("模型用量表 = %+v，期望一行 %q；body=%s", got.Models, want, body)
+	}
+	if len(got.Daily.Models) != 1 {
+		t.Fatalf("模型折线条数 = %d，期望 1；body=%s", len(got.Daily.Models), body)
+	}
+	if got.Daily.Models[0].Model != want {
+		t.Errorf("模型折线 key = %q，期望 %q（路由身份，不是客户端原文 %q）",
+			got.Daily.Models[0].Model, want, "dsf")
+	}
+	if containsStr(body, `"model":"dsf"`) {
+		t.Error("daily.models 里出现了客户端原文 —— 必须用归一化后的 ID")
+	}
+}
+
+// TestStatsDailyModelsOrderedByTotalDesc 守折线排序（含同量时的**稳定性**）。
+//
+// 🔴 为什么"稳定"也要测：若排序只看 sum 不看 key，
+//
+//	map 迭代顺序会让每次刷新的图例顺序都变，用户会以为数据在变。
+func TestStatsDailyModelsOrderedByTotalDesc(t *testing.T) {
+	store := usagepkg.NewStore(t.TempDir())
+	now := time.Now()
+	// tiny/a… 与 mid/b… 刻意**同量**（都是 50）—— 用来验证 tie-break。
+	for _, ev := range []usagepkg.Event{
+		{Time: now, Model: "workbuddy/small", ProviderID: "workbuddy",
+			ResolvedModel: "small", OK: true, PromptTokens: 1, CompletionTokens: 0},
+		{Time: now, Model: "workbuddy/big", ProviderID: "workbuddy",
+			ResolvedModel: "big", OK: true, PromptTokens: 900, CompletionTokens: 0},
+		{Time: now, Model: "workbuddy/aaa", ProviderID: "workbuddy",
+			ResolvedModel: "aaa", OK: true, PromptTokens: 50, CompletionTokens: 0},
+		{Time: now, Model: "workbuddy/zzz", ProviderID: "workbuddy",
+			ResolvedModel: "zzz", OK: true, PromptTokens: 50, CompletionTokens: 0},
+	} {
+		if err := store.Append(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := dailyTestEnv(t, store, nil)
+	d, body := fetchDaily(t, srv.URL, "?days=1")
+
+	if len(d.Models) != 4 {
+		t.Fatalf("模型折线数 = %d，期望 4；body=%s", len(d.Models), body)
+	}
+	// big(900) 最前；aaa/zzz 同量 50 ⇒ 按 key 升序 aaa 在 zzz 前；small(1) 最后
+	want := []string{
+		"workbuddy/big", "workbuddy/aaa", "workbuddy/zzz", "workbuddy/small",
+	}
+	for i, w := range want {
+		if d.Models[i].Model != w {
+			t.Errorf("第 %d 条模型折线 = %q，期望 %q（按总量降序，同量按 ID 升序）",
+				i, d.Models[i].Model, w)
+		}
+	}
+}
+
+// TestStatsDailyModelsNonNullInEmptyWindow 守"没有数据时 models 是 [] 不是 null"。
+//
+// 🔴 与 accounts 同一理由：前端会无条件 .forEach，
+//
+//	null 会让整个统计页抛异常（显示"加载失败"而不是"暂无数据"）。
+//
+// ⚠️ 断言必须**限定在 daily 里**（第一版写成全串匹配 `"models":null`，
+//
+//	结果匹配到的是**顶层**那个 models —— 它在空窗口下本来就是 null
+//	（既有行为，不属于本次改动范围）。那样的断言会永远红，
+//	而且红在一个跟本改动无关的地方。必须解析出 daily 再判。
+func TestStatsDailyModelsNonNullInEmptyWindow(t *testing.T) {
+	store := usagepkg.NewStore(t.TempDir())
+	srv := dailyTestEnv(t, store, nil)
+	_, body := fetchStatsRaw(t, srv.URL, "?days=3")
+
+	got := modelsJSON(t, body)
+	if got != "[]" {
+		t.Errorf("空窗口下 daily.models = %s，期望 []（非 null —— 前端 .forEach 会抛异常）；body=%s",
+			got, body)
+	}
+
+	// 对照：daily.accounts 一直是 []，两者应当一致（同一族字段）
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &top); err != nil {
+		t.Fatal(err)
+	}
+	var daily map[string]json.RawMessage
+	if err := json.Unmarshal(top["daily"], &daily); err != nil {
+		t.Fatal(err)
+	}
+	if string(daily["accounts"]) != string(daily["models"]) {
+		t.Errorf("daily.accounts = %s 而 daily.models = %s —— "+
+			"同族字段的空值表达应当一致",
+			daily["accounts"], daily["models"])
+	}
+}
+
+// modelsJSON 从完整响应体里抠出 daily.models 的原始 JSON 片段。
+//
+// 为什么不直接重新序列化 got.Daily.Models：那样看到的是**我方的结构体**，
+// 而不是服务端真正发出去的字节 —— 契约测试就该看后者。
+func modelsJSON(t *testing.T, body string) string {
+	t.Helper()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &top); err != nil {
+		t.Fatalf("顶层解析失败: %v", err)
+	}
+	var daily map[string]json.RawMessage
+	if err := json.Unmarshal(top["daily"], &daily); err != nil {
+		t.Fatalf("daily 解析失败: %v", err)
+	}
+	return string(daily["models"])
+}

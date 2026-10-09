@@ -1184,15 +1184,26 @@
   ];
 
   function renderCharts(daily) {
-    drawTrend('model-chart', daily, false);
-    drawTrend('acct-chart', daily, true);
+    drawTrend('model-chart', daily, 'model');
+    drawTrend('acct-chart', daily, 'acct');
   }
 
   // drawTrend 画一张趋势图。
   //
-  //	byAccount=false → 单条总用量曲线（模型用量页）
-  //	byAccount=true  → 每账号一条曲线（账号用量页）
-  function drawTrend(elId, daily, byAccount) {
+  //	by='acct'  → 每账号一条曲线（账号用量页）
+  //	by='model' → **每模型**一条曲线（模型用量页）
+  //
+  // 🔴 委托方 2026-10-09 提问：「为什么模型用量的图只有一根线，
+  //	没有每个模型一根线吗」。
+  //
+  //	原实现确实只画了**全体合计**那一条（daily.total_tokens），
+  //	因为后端当时只给了总计 + 每账号两条序列。现已让后端补上
+  //	`daily.models`（与 accounts 同构），这里按模型逐条画。
+  //
+  //	⚠️ 兼容缺失：若后端还没给 models（旧版本/降级），
+  //	  退回画合计那一条 —— 有图总比空白好，但要明确标注是"总计"，
+  //	  不能让人误以为那是"某个模型"的线。
+  function drawTrend(elId, daily, by) {
     var box = document.getElementById(elId);
     if (!box) return;
 
@@ -1206,7 +1217,7 @@
 
     // 组装要画的线：[{name, color, values}]
     var series = [];
-    if (byAccount) {
+    if (by === 'acct') {
       var accts = daily.accounts || [];
       for (var i = 0; i < accts.length; i++) {
         series.push({
@@ -1216,11 +1227,22 @@
         });
       }
     } else {
-      series.push({
-        name: '总 Token',
-        color: chartColors[0],
-        values: daily.total_tokens || []
-      });
+      var models = daily.models || [];
+      for (var j = 0; j < models.length; j++) {
+        series.push({
+          name: models[j].model || ('模型' + (j + 1)),
+          color: chartColors[j % chartColors.length],
+          values: models[j].values || []
+        });
+      }
+      if (!series.length) {
+        // 后端未提供 per-model 序列：退回合计线，并标注清楚它是总计。
+        series.push({
+          name: '总 Token（无分模型数据）',
+          color: chartColors[0],
+          values: daily.total_tokens || []
+        });
+      }
     }
     if (!series.length) {
       box.innerHTML = '<div class="chart-empty">暂无数据</div>';
@@ -1297,18 +1319,34 @@
     }
     svg += '</svg>';
 
-    // 图例：多账号时才需要（单条线的名字已在标题里）
+    // 图例：多条线时必须有（否则不知道哪根是谁）。
+    // 模型名很长，图例里**只显示末段**（`workbuddy/a/b` → `b`）——
+    // 完整 ID 会把图例撑成两行挤掉图；前缀在表里能看全。
     var legend = '';
-    if (byAccount && series.length > 1) {
+    if (series.length > 1) {
       legend = '<div class="chart-legend">';
       for (var li = 0; li < series.length; li++) {
-        legend += '<span><i style="background:' + series[li].color + '"></i>' +
-          esc(series[li].name) + '</span>';
+        legend += '<span title="' + esc(series[li].name) + '">' +
+          '<i style="background:' + series[li].color + '"></i>' +
+          esc(shortSeriesName(series[li].name)) + '</span>';
       }
       legend += '</div>';
     }
 
     box.innerHTML = svg + legend;
+  }
+
+  // shortSeriesName 缩短图例里的名字：模型占位最长，只取最后一段。
+  //
+  //	"workbuddy/deepseek-v4.1-flash" → "deepseek-v4.1-flash"
+  //	"19918027474"                   → 原样（账号名本来就短）
+  //
+  // ⚠️ title 属性保留完整名，鼠标停上去能看到全称 ——
+  //	缩短是为了不挤掉图，不是为了藏信息。
+  function shortSeriesName(name) {
+    var s = String(name || '');
+    var i = s.lastIndexOf('/');
+    return i >= 0 && i < s.length - 1 ? s.slice(i + 1) : s;
   }
 
   // renderModels 渲染模型用量（带分页）。
@@ -1944,6 +1982,14 @@
     var base = location.origin + '/v1';
     var addrEl = document.getElementById('apiAddr');
     if (addrEl) addrEl.textContent = base;
+
+    // 端点表里的 base_url 提示也用**当前实际地址**填，不写死 4545 ——
+    // 用户改过端口后写死的串就是错的信息（那比不写更糟）。
+    var oaEl = document.getElementById('api-base-openai');
+    if (oaEl) oaEl.textContent = base;
+    // Anthropic 的 base_url 是**不带 /v1** 的 origin（它自己追加 /v1/messages）。
+    var anEl = document.getElementById('api-base-anthropic');
+    if (anEl) anEl.textContent = location.origin;
 
     bindCopy('btn-copy-base', function () { return base; });
     // 密钥从 DOM 读取（单一事实源）—— 内容由 fillApiCredentials 填入

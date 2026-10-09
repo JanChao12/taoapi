@@ -95,8 +95,8 @@ type statsResponse struct {
 //
 // 🔴 硬不变量：Dates / Labels / TotalTokens / PromptTokens /
 // CompletionTokens 的长度**必须都等于 len(Dates)**，
-// 且每个 Accounts[].Values 也一样。少一格图表就错位 ——
-// 这不是"最好满足"，是构造上必须成立（见 dailySeriesBuilder）。
+// 且每个 Accounts[].Values 与 Models[].Values 也一样。少一格图表就错位 ——
+// 这不是"最好满足"，是构造上必须成立（见 dailyBuilder）。
 type dailyStats struct {
 	// Dates 升序（最旧 → 最新）的 ISO 日期，如 "2026-10-03"。
 	//
@@ -120,6 +120,23 @@ type dailyStats struct {
 	//
 	// ⚠️ 只含**窗口内出现过**的账号（没用过就没线，不是补一条全 0 的线）。
 	Accounts []dailyAccountSeries `json:"accounts"`
+
+	// Models 每个模型一条折线，按窗口内总 token 降序。
+	//
+	// 🔴 为什么要加（2026-10-09 委托方实测反馈：
+	//	「模型用量那张图为什么只有一条 total 线」）：
+	//
+	//	账号图早就是"一号一线"，模型图却只画总量 —— 同一个页面上两套口径，
+	//	而模型表里明明有 N 行。用户看不出"是哪个模型把用量顶上去了"，
+	//	只能看到总量在涨。逐模型折线才回答"涨的是谁"。
+	//
+	// ⚠️ 只含**窗口内出现过**的模型（没用过就没线，不是补一条全 0 的线）
+	//	—— 与 Accounts 同一条规则。
+	//
+	// ⚠️ 模型 key 与 Models[].Model（模型用量表）**同源同值**：
+	//	都来自 Deps.resolveModelKey。这是刻意的 —— 两处若各自归一化，
+	//	迟早出现"表里有这行、图上没有这条线"（或反之）的分叉。
+	Models []dailyModelSeries `json:"models"`
 }
 
 // dailyAccountSeries 是 daily 里的一条账号折线。
@@ -137,6 +154,26 @@ type dailyAccountSeries struct {
 	Account string `json:"account"`
 
 	// Values 该账号逐日 token（与 Dates 等长、下标一一对应）。
+	Values []int64 `json:"values"`
+}
+
+// dailyModelSeries 是 daily 里的一条模型折线。
+//
+// 🔴 形状刻意与 dailyAccountSeries **不对称**（只有一个 Model 字段）：
+//
+//	账号需要"图例名 + 脱敏 ID"两个字段，是因为脱敏 ID 对人不可读
+//	（`19918027…`），图例必须换成昵称。模型 ID 本身就是可读、
+//	唯一、且与模型用量表同一列的值 —— 再加一个 Name 只会多出
+//	"两者不一致"的可能，没有任何信息增益。前端直接用 Model 作图例。
+type dailyModelSeries struct {
+	// Model 归一化后的模型 ID，与 Models[].Model **同源**
+	// （同一次 resolveModelKey 调用的结果）。
+	Model string `json:"model"`
+
+	// Values 该模型逐日 token（与 Dates 等长、下标一一对应）。
+	//
+	// ⚠️ 口径与账号折线一致：prompt + completion 的**自洽求和**，
+	//	不是照抄 ev.TotalTokens（理由见 dailyBuilder.add）。
 	Values []int64 `json:"values"`
 }
 
@@ -301,6 +338,7 @@ func handleStats(deps Deps, w http.ResponseWriter, r *http.Request) {
 				PromptTokens:     []int64{},
 				CompletionTokens: []int64{},
 				Accounts:         []dailyAccountSeries{},
+				Models:           []dailyModelSeries{},
 			},
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -352,9 +390,9 @@ func handleStats(deps Deps, w http.ResponseWriter, r *http.Request) {
 	var creditSum float64
 	var creditSeen bool
 
-	// 日时间序列累加器（2026-10-09 新增）。
+	// 日时间序列累加器（2026-10-09 新增；同日补逐模型折线）。
 	//
-	// 🔴 内存口径：O(days × 账号数)，**与记录条数无关**。
+	// 🔴 内存口径：O(days × 实体数)，**与记录条数无关**。
 	//	它只是一组长度固定为 days 的切片，绝不缓存任何一条事件 ——
 	//	否则"一天上万条"会把内存吃光（见 dailyBuilder 的注释）。
 	daily := newDailyBuilder(days, now)
@@ -362,10 +400,51 @@ func handleStats(deps Deps, w http.ResponseWriter, r *http.Request) {
 	// 用 ReadResult 而不是 Read：需要知道"数据是否完整"，
 	// 否则截断时面板会把部分统计显示成完整统计（Codex 第 17 轮要求）。
 	rr, err := deps.Usage.ReadResult(days, func(ev usagepkg.Event) error {
+		// ── 模型归一化 key ──
+		//
+		// 🔴 为什么必须归一化（2026-10-06 委托方实测反馈）：
+		//
+		//	同一个模型会因为**客户端写法不同**被记成多条：
+		//	  "dsf"                        （别名）
+		//	  "deepseek-v4.1-flash"        （裸 ID）
+		//	  "workbuddy/deepseek-v4.1-flash"（带前缀的完整 ID）
+		//	三条其实是**同一个模型**，分成三行让用户以为用了三种模型。
+		//	委托方原话：「这个dsf和deepseek-v4.1-flash使用的都是
+		//	workbuddy/deepseek-v4.1-flash，为什么三种显示，
+		//	都显示workbuddy/deepseek-v4.1-flash就行」
+		//
+		//	⚠️ 只在**聚合时**归一化，**不改历史记录** ——
+		//	  JSONL 里的原始值保持不动（那是事实），
+		//	  归一化只是"展示口径"，将来还能按原文重新聚合。
+		//
+		// 🔴 优先用记录里的**真实路由身份**（Codex 第 40 轮建议）：
+		//	新记录带 ProviderID + ResolvedModel，直接拼出准确 ID，
+		//	不依赖注册表当前状态 —— 这样接入第二个平台后，
+		//	老记录的归属不会被改写。
+		//	老记录（这两个字段为空）才回退到 CanonicalModelID。
+		//	（这两条规则本身在 Deps.resolveModelKey 里，此处只调用。）
+		//
+		// 🔴 在这里**只算一次**，然后同时喂给"模型用量表"（modelMap）
+		//	和"逐模型折线"（daily）。
+		//
+		//	为什么提前到最前面算（而不是让 dailyBuilder 自己再算一遍）：
+		//
+		//	① resolveModelKey 不是纯字符串拼接：新记录那条路径是拼串，
+		//	   但老记录回退到 CanonicalModelID 时要进 Router 读锁、
+		//	   遍历全部渠道、还要排序 owners。一天上万条时每条算两遍
+		//	   是白烧 CPU（本项目跑在 8 GB 机器上，能省则省）。
+		//
+		//	② 更要紧的是**一致性**：图表存在的意义就是回答
+		//	   "表里这一行是哪条线"。若两处各自调用一次，
+		//	   将来（例如有人给 Router 换一张会变的别名表）就有分叉的
+		//	   可能，表现为"表里有这行、图上没这条线"，而且不报错。
+		//	   传**同一个值**则构造上不可能分叉。
+		modelKey := deps.resolveModelKey(ev)
+
 		// 日序列先累计（与下面各聚合器互不影响）。
 		//
 		// 🔴 归属日必须用**事件自己的时间戳**（见 dailyBuilder.add 的说明）。
-		daily.add(ev)
+		daily.add(ev, modelKey)
 		resp.Total.Requests++
 		if ev.OK {
 			resp.Total.OK++
@@ -393,30 +472,9 @@ func handleStats(deps Deps, w http.ResponseWriter, r *http.Request) {
 			creditSum += *ev.Credit
 		}
 
-		// 按模型聚合 —— 先归一化 ID。
-		//
-		// 🔴 为什么必须归一化（2026-10-06 委托方实测反馈）：
-		//
-		//	同一个模型会因为**客户端写法不同**被记成多条：
-		//	  "dsf"                        （别名）
-		//	  "deepseek-v4.1-flash"        （裸 ID）
-		//	  "workbuddy/deepseek-v4.1-flash"（带前缀的完整 ID）
-		//	三条其实是**同一个模型**，分成三行让用户以为用了三种模型。
-		//	委托方原话：「这个dsf和deepseek-v4.1-flash使用的都是
-		//	workbuddy/deepseek-v4.1-flash，为什么三种显示，
-		//	都显示workbuddy/deepseek-v4.1-flash就行」
-		//
-		//	⚠️ 只在**聚合时**归一化，**不改历史记录** ——
-		//	  JSONL 里的原始值保持不动（那是事实），
-		//	  归一化只是"展示口径"，将来还能按原文重新聚合。
-		//
-		// 🔴 优先用记录里的**真实路由身份**（Codex 第 40 轮建议）：
-		//	新记录带 ProviderID + ResolvedModel，直接拼出准确 ID，
-		//	不依赖注册表当前状态 —— 这样接入第二个平台后，
-		//	老记录的归属不会被改写。
-		//	老记录（这两个字段为空）才回退到 CanonicalModelID。
-		modelKey := deps.resolveModelKey(ev)
-
+		// 按模型聚合 —— 归一化 key 已在回调开头算好（见那里关于
+		// "为什么只算一次"的说明）。这里与 daily 的逐模型折线**共用同一个值**，
+		// 所以"模型用量表"与"模型趋势图"的 key 构造上不可能分叉。
 		ms, ok := modelMap[modelKey]
 		if !ok {
 			ms = &modelStat{Model: modelKey}
@@ -562,16 +620,22 @@ func handleStats(deps Deps, w http.ResponseWriter, r *http.Request) {
 // 日时间序列累加器（2026-10-09，委托方要求"两张图"）
 // ─────────────────────────────────────────────────────────────
 
-// dailyBuilder 把流式读到的用量事件累加成"逐日 × 逐账号"的矩阵。
+// dailyBuilder 把流式读到的用量事件累加成"逐日 × 逐账号/逐模型"的矩阵。
 //
-// 🔴 内存为什么是 O(days × 账号数) 而不是 O(记录数)：
+// 🔴 内存为什么是 O(days × 实体数) 而不是 O(记录数)：
 //
-//	它持有的是**定长**结构 —— 长度 days 的六个切片 + 每个账号一条
+//	它持有的是**定长**结构 —— 长度 days 的六个切片 + 每个实体一条
 //	长度 days 的切片。事件**读一条、加一格、立刻丢弃**，绝不入队/缓存。
-//	所以一天一万条与一条，占用完全相同（账号数是个位数）。
+//	所以一天一万条与一条，占用完全相同（账号数是个位数、模型数是几十）。
 //
 //	这是本项目内存红线（8 GB 机器 / idle RSS ≤ 60 MB）的直接要求：
 //	若为了画图先把事件收集成 []Event 再聚合，一天的量就够把内存吃光。
+//
+// ⚠️ 2026-10-09 加逐模型折线时**没有新增任何 O(记录数) 的东西**：
+//
+//	modelIdx 与 modelValues 的形状/生命周期与 acctIdx / accts 完全平行，
+//	上界是"窗口内出现过的模型数"（本机 34 个），与用量无关。
+//	这是本次唯一的加法 —— 因此内存口径一字未变。
 //
 // ⚠️ 为什么"日期 → 下标"用一张小 map，而不是线性查找：
 //
@@ -603,6 +667,20 @@ type dailyBuilder struct {
 
 	// accts 是窗口内出现过的账号（每个一条定长 values）。
 	accts []*dailyAcct
+
+	// acctIdx 的模型版本：归一化模型 ID → modelValues 的下标。
+	//
+	// 🔴 key 必须是 Deps.resolveModelKey 的结果，**不是** ev.Model 原文。
+	//	否则模型图与模型表会对不上（同一模型几种写法各画一条线，
+	//	而表里已经合成一行）—— 那就等于把 2026-10-06 修掉的
+	//	"一个模型显示成三种"从表里挪到了图上。
+	modelIdx map[string]int
+
+	// modelValues 是窗口内出现过的模型（每个一条定长 values）。
+	//
+	// ⚠️ 与 accts 的差别只有"没有昵称要反查"，所以不需要包装结构体
+	//	（模型 ID 本身就是图例名，见 dailyModelSeries 的注释）。
+	modelValues []*dailyModel
 }
 
 // dailyAcct 是一个账号的累加状态（**不导出**，仅内部用）。
@@ -610,6 +688,15 @@ type dailyAcct struct {
 	account  string
 	nickname string
 	values   []int64
+}
+
+// dailyModel 是一个模型的累加状态（**不导出**，仅内部用）。
+//
+// ⚠️ 之所以能比 dailyAcct 少两个字段：账号要从事件里的**脱敏 ID**
+// 反查昵称才能作图例，模型不需要任何反查 —— key 本身就是图例名。
+type dailyModel struct {
+	model  string
+	values []int64
 }
 
 // newDailyBuilder 按 days 窗口预生成连续日期轴（含零用量的日子）。
@@ -628,6 +715,7 @@ func newDailyBuilder(days int, now time.Time) *dailyBuilder {
 		prompt:     make([]int64, days),
 		completion: make([]int64, days),
 		acctIdx:    make(map[string]int),
+		modelIdx:   make(map[string]int),
 	}
 
 	// 🔴 归属日按 **UTC+8** 算，与全项目一致（auth/pool/provider/CLI
@@ -649,6 +737,16 @@ func newDailyBuilder(days int, now time.Time) *dailyBuilder {
 
 // add 把一条事件累加进对应日期格。
 //
+// modelKey 由调用方用 Deps.resolveModelKey 算好后传入（**不是** ev.Model 原文）。
+//
+// 🔴 为什么让它由外部传入、而不是在这里自己算（2026-10-09 加逐模型折线时定）：
+//
+//	① 与"模型用量表"共用**同一个字符串**，两处永远不可能分叉
+//	   （表里有这行就一定有这条线）。若这里再调一次 resolveModelKey，
+//	   就多出一条"两次调用结果不同"的路径 —— 那类 bug 不报错、只错图。
+//	② resolveModelKey 的老记录回退路径要进 Router 读锁 + 遍历渠道，
+//	   而 add 是**每条记录**都调用的热点，不该在这里做重活。
+//
 // 🔴 归属日取 `ev.Time`（事件**自己的**时间戳），不是文件名。
 //
 //	理由：usage.Store 虽然按日分文件写（fileName(ev.Time)），但
@@ -664,7 +762,7 @@ func newDailyBuilder(days int, now time.Time) *dailyBuilder {
 //	⚠️ 越界的事件直接忽略（不进任何格）：理论上 ev.Time 一定落在
 //	  窗口内（文件按日分），但若有人手动改了系统时间或补写旧记录，
 //	  落到窗口外就会让下标越界 panic。宁可少算一格，不可崩整个统计页。
-func (b *dailyBuilder) add(ev usagepkg.Event) {
+func (b *dailyBuilder) add(ev usagepkg.Event, modelKey string) {
 	key := ev.Time.In(cnZone).Format("2006-01-02")
 	idx := b.indexOf(key)
 	if idx < 0 {
@@ -684,6 +782,30 @@ func (b *dailyBuilder) add(ev usagepkg.Event) {
 	b.completion[idx] += ev.CompletionTokens
 	b.total[idx] += ev.PromptTokens + ev.CompletionTokens
 
+	// 逐模型累加（2026-10-09 加）。
+	//
+	// ⚠️ 口径与上面三行**完全一致**（prompt + completion），
+	//	也与账号折线一致 —— 三张图必须能用同一把尺子对照，
+	//	不能模型线用自洽口径、总数线用 ev.TotalTokens。
+	//
+	// ⚠️ 空 modelKey 跳过（与下面"空账号跳过"对称）：归一化失败时
+	//	宁可这条不进任何模型线，也不要凭空造出一条空名字的线。
+	if modelKey != "" {
+		i, ok := b.modelIdx[modelKey]
+		if !ok {
+			i = len(b.modelValues)
+			b.modelIdx[modelKey] = i
+			b.modelValues = append(b.modelValues, &dailyModel{
+				model:  modelKey,
+				values: make([]int64, b.days),
+			})
+		}
+		b.modelValues[i].values[idx] += ev.PromptTokens + ev.CompletionTokens
+	}
+
+	// ⚠️ 这里是 `if` 而不是 `return` 早退（2026-10-09 改）：
+	//	模型累加必须对**所有**记录生效，而账号可以为空
+	//	（异常/未识别账号的事件仍应计入模型线）。
 	if ev.Account == "" {
 		return
 	}
@@ -716,6 +838,21 @@ func (b *dailyBuilder) indexOf(key string) int {
 //
 // accountName 用于把脱敏 ID 翻成图例显示名（昵称优先）。
 // 传 nil 表示没有账号表 —— 此时所有账号都退回脱敏 ID。
+// build 把累加结果转成对外契约（dailyStats）。
+//
+// 🔴 硬不变量在这里被**构造性**保证：所有切片都由 b.days 一次分配，
+//
+//	下标全部来自同一个 indexOf —— 不存在"少写一格"的路径。
+//	accounts / models 的每条 values 也一样（都在 add 里
+//	`make([]int64, b.days)`）。stats_daily_test.go 里另有一条断言守着它
+//	（防止将来有人改成 append 式）。
+//
+// accountName 用于把脱敏 ID 翻成图例显示名（昵称优先）。
+// 传 nil 表示没有账号表 —— 此时所有账号都退回脱敏 ID。
+//
+// ⚠️ models 不需要任何类似的"取名回调"：模型 ID 本身就是图例
+//
+//	（见 dailyModelSeries 的注释）。
 func (b *dailyBuilder) build(accountName func(masked string) string) dailyStats {
 	out := dailyStats{
 		Dates:            b.dayKeys,
@@ -726,6 +863,7 @@ func (b *dailyBuilder) build(accountName func(masked string) string) dailyStats 
 		// ⚠️ 必须是非 nil 空切片：JSON 输出 `[]` 而不是 `null`，
 		//	前端才能无条件 .forEach（null 会抛异常）。
 		Accounts: []dailyAccountSeries{},
+		Models:   []dailyModelSeries{},
 	}
 
 	for i, k := range b.dayKeys {
@@ -740,9 +878,9 @@ func (b *dailyBuilder) build(accountName func(masked string) string) dailyStats 
 		}
 	}
 
-	// 按窗口内总 token 降序（与 resp.Accounts 的"按用量排序"同一精神：
-	// 用得多的画在上面/排前面）。同量时按脱敏 ID 定序 —— 让输出**稳定**，
-	// 否则 map 迭代顺序会让每次请求的折线顺序都变（前端图例乱跳）。
+	// 按窗口内总 token 降序（与 resp.Accounts / resp.Models 的"按用量排序"
+	// 同一精神：用得多的画在上面/排前面）。同量时按 ID 定序 —— 让输出
+	// **稳定**，否则 map 迭代顺序会让每次请求的折线顺序都变（前端图例乱跳）。
 	type ranked struct {
 		acct *dailyAcct
 		sum  int64
@@ -773,6 +911,38 @@ func (b *dailyBuilder) build(accountName func(masked string) string) dailyStats 
 			Name:    name,
 			Account: r.acct.account,
 			Values:  r.acct.values,
+		})
+	}
+
+	// 逐模型折线：与上面账号折线**逐条对应**的同一套逻辑
+	// （同样的"窗口内总量降序 + 同量按 key 定序"），只是不需要取名。
+	//
+	// ⚠️ 这里再写一遍排序而不是抽成泛型/接口：Go 泛型在这里能省约 6 行，
+	//	代价是调用点变成 `rankSeries[每天X](...)` 这种要读两遍的形状。
+	//	本项目"标准库优先、不加未被要求的抽象"，6 行重复换一眼看穿更划算。
+	type rankedModel struct {
+		model *dailyModel
+		sum   int64
+	}
+	mlist := make([]rankedModel, 0, len(b.modelValues))
+	for _, m := range b.modelValues {
+		var sum int64
+		for _, v := range m.values {
+			sum += v
+		}
+		mlist = append(mlist, rankedModel{model: m, sum: sum})
+	}
+	sort.Slice(mlist, func(i, j int) bool {
+		if mlist[i].sum != mlist[j].sum {
+			return mlist[i].sum > mlist[j].sum
+		}
+		return mlist[i].model.model < mlist[j].model.model
+	})
+
+	for _, r := range mlist {
+		out.Models = append(out.Models, dailyModelSeries{
+			Model:  r.model.model,
+			Values: r.model.values,
 		})
 	}
 	return out

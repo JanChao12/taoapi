@@ -430,6 +430,107 @@ func TestStatsTableAutoRefreshDisabled(t *testing.T) {
 	}
 }
 
+// TestModelChartDrawsOneLinePerModel 守：模型用量图**每个模型一条线**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方 2026-10-09 提问：
+//
+//	「为什么模型用量的图只有一根线，没有每个模型一根线吗」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+//	属实 —— 原实现只画了 daily.total_tokens 那一条**全体合计**线，
+//	因为后端当时只给了"总计 + 每账号"两组序列。现在：
+//	  · 后端补 `daily.models`（与 accounts 同构，见 stats.go）
+//	  · 前端按模型逐条画
+//
+// 本测试守住前端这一半（后端那半由 stats 包测试守）。
+func TestModelChartDrawsOneLinePerModel(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+
+	// drawTrend 必须支持"按模型"这个维度
+	body := funcBody(t, js, "drawTrend")
+	if !strings.Contains(body, "daily.models") {
+		t.Error("drawTrend 没有读 daily.models —— " +
+			"模型用量图只会画一条合计线（委托方已指出这不对）")
+	}
+	if !strings.Contains(body, "models[j].values") {
+		t.Error("drawTrend 没有对每个模型各取一条 values —— 应每模型一条线")
+	}
+
+	// 调用点必须把模型页标成 'model' 维度（不能退回合计）
+	rc := funcBody(t, js, "renderCharts")
+	if !strings.Contains(rc, "'model-chart'") || !strings.Contains(rc, "'model'") {
+		t.Errorf("renderCharts 没有把模型页按 'model' 维度渲染。实际：%s", rc)
+	}
+
+	// 多条线必须有图例（否则不知道哪根是哪个模型）
+	if !strings.Contains(body, "chart-legend") {
+		t.Error("drawTrend 缺少图例 —— 多条线没有图例等于没法读")
+	}
+}
+
+// TestPanelEndpointSectionStaysConcise 守：API 接入页**只列协议 + 特殊情况**，
+// 不许再把它写回大段重复说明。
+//
+// 委托方 2026-10-09 原话：
+//
+//	「api写的太多了，只需要写支持哪些协议，以及写特殊情况的协议就行了，
+//	  不用重复解释和重复写协议」。
+//
+// 所以这条测试断言：
+//
+//	· 协议表存在，且列出全部 5 个端点（护栏 TestPanelApiEndpoint... 另守一致性）
+//	· **只有一个** base_url 例外（Anthropic 不带 /v1）
+//	· 没有重复堆叠的解释段落（用端点表数量收敛：只允许 1 张表）
+func TestPanelEndpointSectionStaysConcise(t *testing.T) {
+	html := stripHTMLComments(panelAsset(t, "index.html"))
+
+	segStart := strings.Index(html, "api-endpoints")
+	if segStart < 0 {
+		t.Fatal("找不到 api-endpoints 区块")
+	}
+	seg := html[segStart:]
+	if end := strings.Index(seg, "</section>"); end > 0 {
+		seg = seg[:end]
+	}
+
+	// ① 只允许**一张**表（原来有两张：端点表 + base_url 填法表 = 重复）
+	if n := strings.Count(seg, "<table"); n != 1 {
+		t.Errorf("api-endpoints 区块里有 %d 张表 —— 委托方要求精简，"+
+			"协议与 base_url 应合并在一起，不要重复列表", n)
+	}
+
+	// ② 5 个端点都要在
+	for _, p := range []string{
+		"/v1/chat/completions", "/v1/responses", "/v1/messages",
+		"/v1/messages/count_tokens", "/v1/models",
+	} {
+		if !strings.Contains(seg, p) {
+			t.Errorf("协议表缺少 %s", p)
+		}
+	}
+
+	// ③ base_url 的两条规则都要在（OpenAI 带 /v1、Anthropic 不带）
+	if !strings.Contains(seg, "api-base-openai") || !strings.Contains(seg, "api-base-anthropic") {
+		t.Error("缺少 base_url 的动态占位（OpenAI 带 /v1 / Anthropic 不带）—— " +
+			"写死端口的话用户改过端口后这段就是错的信息")
+	}
+	if !strings.Contains(seg, "不带") {
+		t.Error("缺少「Anthropic 不带 /v1」这句例外说明 —— " +
+			"那是唯一真正会配错的地方，必须写")
+	}
+
+	// ④ 反向断言：不许再出现重复的长解释（旧的"三种协议共用一个服务，
+	//	但基址不同"那张表和它的说明已删）
+	for _, gone := range []string{"SDK 自动追加", "客户端 / SDK"} {
+		if strings.Contains(seg, gone) {
+			t.Errorf("api-endpoints 区块仍有已删除的重复说明 %q —— "+
+				"委托方要求精简为「支持哪些协议 + 特殊情况」", gone)
+		}
+	}
+}
+
 // TestPageSliceNeverClampsToFirstWhenEmpty 守：空数据时**不夹取页码**。
 //
 // ═══════════════════════════════════════════════════════════════════
