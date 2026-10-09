@@ -1323,8 +1323,15 @@
 
     // ── 画布几何 ──
     // viewBox + width:100% 让它自适应容器宽度（无需监听 resize）。
-    var W = 420, H = 210;
-    var padL = 46, padR = 10, padT = 10, padB = 26;
+    //
+    // 🔴 padR 必须留够（2026-10-09 委托方截图：末位日期「10-09」被右边缘裁掉）。
+    //
+    //	原来 padR=10，而横轴最后一个标签是**居中**对齐的 ——
+    //	它的一半宽度（约 16px）会伸到绘图区右侧之外，超出 viewBox 就被裁。
+    //	⇒ 给右侧留出"半个标签宽"，并把最后一个标签改成右对齐（见下），
+    //	  双保险。
+    var W = 460, H = 210;
+    var padL = 46, padR = 26, padT = 10, padB = 26;
     var plotW = W - padL - padR;
     var plotH = H - padT - padB;
 
@@ -1352,11 +1359,32 @@
         (y + 3).toFixed(1) + '" text-anchor="end">' + yText + '</text>';
     }
 
-    // 横轴标签：最多 6 个，等距抽样（点多时全画会糊成一片）
+    // 横轴标签：最多 6 个，等距抽样（点多时全画会糊成一片）。
+    //
+    // 🔴 首末两个标签要**贴边对齐**，不能居中 —— 居中的话最后一个会
+    //	有一半伸到绘图区右边界之外、被 viewBox 裁掉（委托方截图里的
+    //	「10-09」就是被裁的）。首标签同理（会压到纵轴标签上）。
     var step = Math.max(1, Math.ceil(n / 6));
+    var shownIdx = [];
     for (var xi = 0; xi < n; xi += step) {
-      svg += '<text class="chart-axis-label" x="' + xAt(xi).toFixed(1) + '" y="' +
-        (H - 8) + '" text-anchor="middle">' + esc(labels[xi]) + '</text>';
+      shownIdx.push(xi);
+    }
+    // 保证最后一个点一定被标注（抽样可能刚好跳过它）
+    if (shownIdx[shownIdx.length - 1] !== n - 1) {
+      shownIdx.push(n - 1);
+    }
+    for (var li2 = 0; li2 < shownIdx.length; li2++) {
+      var idx2 = shownIdx[li2];
+      var anchor = 'middle';
+      var tx = xAt(idx2);
+      if (idx2 === 0) {
+        anchor = 'start';          // 首个贴左，避免压到纵轴
+      } else if (idx2 === n - 1) {
+        anchor = 'end';            // 末个贴右，避免被裁
+        tx = W - 4;
+      }
+      svg += '<text class="chart-axis-label" x="' + tx.toFixed(1) + '" y="' +
+        (H - 8) + '" text-anchor="' + anchor + '">' + esc(labels[idx2]) + '</text>';
     }
 
     // 曲线（2026-10-09 委托方要求「线能不能做成曲线」）。
@@ -1440,7 +1468,27 @@
   //
   // 对每个点算切线控制点：c1 = p1 + (p2-p0)/6，c2 = p2 - (p3-p1)/6
   // （端点用自身代替越界的邻居）。这就是标准的 Catmull-Rom 转 Bezier，
-  // 数学上经过**所有**原始点 —— 不改变数据，只改变点之间的连接方式。
+  // 数学上经过**所有**原始点。
+  //
+  // ═══════════════════════════════════════════════════════════════════
+  // 🔴 控制点必须夹在**本段两端点的 y 范围内**（2026-10-09 委托方实测反馈：
+  //	「为什么线会向下超出坐标轴」）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  //	纯 Catmull-Rom 会**过冲**：当某点是局部最小值（如 0，两侧也是 0
+  //	而再外侧在涨）时，切线控制点会被算到该点**下方** ⇒ 曲线拱到
+  //	0 以下、跑出坐标轴，看着像"用了负 token"。
+  //
+  //	修法：把每段的两个控制点 y 夹到 [min(p1.y,p2.y), max(p1.y,p2.y)]。
+  //	为什么这一夹就**可证明**不会过冲：
+  //	  三次贝塞尔曲线上的每个点都是 4 个控制点的**凸组合**
+  //	  （权重为伯恩斯坦多项式，非负且和为 1）。
+  //	  4 个控制点的 y 全部落在 [lo,hi] 内 ⇒ 曲线上任何点的 y 也在
+  //	  [lo,hi] 内。而 lo/hi 就是本段两端点的 y ⇒ 曲线不会越过任一端点。
+  //
+  //	⚠️ 曲线仍**精确经过**每个原始数据点（端点权重为 1），
+  //	  所以这是"去掉虚假过冲"而不是"美化数据"。
+  //	⚠️ x 方向不做夹取：x 单调递增，夹了反而可能让曲线回折。
   function smoothPath(pts) {
     if (pts.length < 2) return '';
     var d = 'M' + pts[0].x.toFixed(1) + ',' + pts[0].y.toFixed(1);
@@ -1449,15 +1497,29 @@
       var p1 = pts[i];
       var p2 = pts[i + 1];
       var p3 = pts[i + 2] || p2;
+
       var c1x = p1.x + (p2.x - p0.x) / 6;
-      var c1y = p1.y + (p2.y - p0.y) / 6;
       var c2x = p2.x - (p3.x - p1.x) / 6;
-      var c2y = p2.y - (p3.y - p1.y) / 6;
+
+      // 本段两端点的 y 范围 —— 控制点必须落在这里面（见上方的证明）。
+      var lo = Math.min(p1.y, p2.y);
+      var hi = Math.max(p1.y, p2.y);
+      var c1y = clampNum(p1.y + (p2.y - p0.y) / 6, lo, hi);
+      var c2y = clampNum(p2.y - (p3.y - p1.y) / 6, lo, hi);
+
       d += ' C' + c1x.toFixed(1) + ',' + c1y.toFixed(1) +
         ' ' + c2x.toFixed(1) + ',' + c2y.toFixed(1) +
         ' ' + p2.x.toFixed(1) + ',' + p2.y.toFixed(1);
     }
     return d;
+  }
+
+  // clampNum 把 v 夹到 [lo, hi]。
+  function clampNum(v, lo, hi) {
+    if (hi < lo) { var t = lo; lo = hi; hi = t; }
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
   }
 
   // bindChartHover 给图绑定悬停：显示参考线 + 该 x 处各线的值。
@@ -1556,14 +1618,15 @@
       var m = info.rows[i];
       // 列已按委托方 2026-10-09 要求砍到 4 列：
       //   模型 / 调用 / Tokens / 积分
-      // 「缓存命中率」列删除 —— 原话：「模型用量和账号用量可以删除命中缓存率
-      //   留更多空间将模型名和账号名一行显示」。腾出的宽度给模型名，
-      // 让它**一行显示完整**（原来被截成 `workbuddy/deepseek-v4.1-fla…`）。
       //
-      // ⚠️ 仍需用后端的 total_tokens（与顶部卡片同口径），不在前端相加 ——
-      //	相加会掩盖"上游没给 usage"的差异（那种情况 token 记 0）。
+      // 🔴 模型名在**表格里**去掉渠道前缀（`workbuddy/deepseek-v4.1-flash`
+      //	→ `deepseek-v4.1-flash`），委托方要求：
+      //	「再缩减 1/3 的账号名和模型名提供更多空间给表格」。
+      //	完整 ID 放进 title，鼠标停上去仍能看到。
+      //	⚠️ 前缀不是"没用"（它区分平台），所以要去掉的是**显示**，
+      //	  不是数据 —— 图表图例、图表 tooltip 也各自处理过。
       html += '<tr>'
-        + '<td class="mono">' + esc(m.model) + '</td>'
+        + '<td class="mono" title="' + esc(m.model) + '">' + esc(shortSeriesName(m.model)) + '</td>'
         + '<td class="num">' + fmtInt(m.requests) + '</td>'
         + '<td class="num">' + fmtNum(m.total_tokens) + '</td>'
         + '<td class="num">' + (m.credits === null || m.credits === undefined ? '—' : Number(m.credits).toFixed(2)) + '</td>'
@@ -2174,34 +2237,45 @@
     var addrEl = document.getElementById('apiAddr');
     if (addrEl) addrEl.textContent = base;
 
-    // 端点表里的 base_url 提示也用**当前实际地址**填，不写死 4545 ——
-    // 用户改过端口后写死的串就是错的信息（那比不写更糟）。
-    var oaEl = document.getElementById('api-base-openai');
-    if (oaEl) oaEl.textContent = base;
-    // Anthropic 的 base_url 是**不带 /v1** 的 origin（它自己追加 /v1/messages）。
-    var anEl = document.getElementById('api-base-anthropic');
-    if (anEl) anEl.textContent = location.origin;
+    // Anthropic 兼容接口的地址（2026-10-09 加）：
+    // 与 OpenAI 的**不同** —— 它是**不带 /v1** 的 origin，
+    // 因为 Anthropic SDK 自己会追加 /v1/messages。
+    var anAddrEl = document.getElementById('apiAddrAnthropic');
+    if (anAddrEl) anAddrEl.textContent = location.origin;
 
     bindCopy('btn-copy-base', function () { return base; });
+    bindCopy('btn-copy-base-anthropic', function () { return location.origin; });
     // 密钥从 DOM 读取（单一事实源）—— 内容由 fillApiCredentials 填入
     bindCopy('btn-copy-key', function () {
       var el = document.getElementById('apiKeyView');
       return el ? String(el.textContent || '') : '';
     });
+    // Anthropic 卡片上的密钥是**同一个** API Key（同一服务、同一鉴权），
+    // 但它在自己那张卡里，所以也给它一个复制按钮。
+    bindCopy('btn-copy-key-anthropic', function () {
+      var el = document.getElementById('apiKeyViewAnthropic');
+      return el ? String(el.textContent || '') : '';
+    });
   }
 
-  // fillApiCredentials 把密钥填到「API 接入」页。
+  // fillApiCredentials 把密钥填到「API 接入」页（两处都填）。
   //
   // 🔴 为什么要（2026-10-06 委托方要求）：
   //    「在api右边加个显示key，以及复制按键，方便用户在这个界面直接接入完整信息」
   //    （后又要求「不要模型名」—— 已移除，只保留地址 + 密钥）
+  //
+  // 🔴 两处都要填（2026-10-09）：OpenAI 卡与 Anthropic 卡是两个独立的
+  //	DOM 元素。只填一个会让另一张卡显示「—」，看起来像"那个接口没密钥"。
+  //	它们值相同（同一服务），但**不能共用一个元素** —— 那样两张卡
+  //	在布局上就变成一个了。
   function fillApiCredentials() {
     // 密钥：用与设置页同一个接口（明文返回，理由见后端 settingsView.APIKey）
     fetchJSON('/api/settings').then(function (d) {
+      var v = (d && d.apiKey) ? String(d.apiKey) : '（未设置）';
       var el = document.getElementById('apiKeyView');
-      if (el) {
-        el.textContent = (d && d.apiKey) ? String(d.apiKey) : '（未设置）';
-      }
+      if (el) el.textContent = v;
+      var el2 = document.getElementById('apiKeyViewAnthropic');
+      if (el2) el2.textContent = v;
     }).catch(function (e) { console.error(e); });
   }
 

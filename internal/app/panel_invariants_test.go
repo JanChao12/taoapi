@@ -148,15 +148,22 @@ func TestPanelApiEndpointListMatchesRoutes(t *testing.T) {
 		t.Fatal("没从 server.go 解析出任何 /v1 路由 —— 正则或注册写法变了，本测试已失效")
 	}
 
-	// ② 从面板里抽出「支持的端点」区块中列出的路径。
-	//	限定在该区块内，避免匹配到别处的代码示例。
-	segStart := strings.Index(html, "api-endpoints")
+	// ② 从面板里抽出「支持的协议」浮层中列出的路径。
+	//
+	//	⚠️ 2026-10-09 起协议表**默认不显示**，改成一个 ? 图标悬停展开
+	//	  （委托方要求：「支持的协议列表我建议不主动显示，可以在这附近
+	//	    有个问号图标，当鼠标指向时才显示这个内容」）。
+	//	  所以锚点从 `api-endpoints` 换成 `api-help-pop`（浮层容器）。
+	//	  ⚠️ 换锚点时必须同步确认"表格还在" —— 否则浮层若被改成
+	//	    纯文本，本测试会因为匹配不到路径而**报失效**（那是好事，
+	//	    比静默通过好）。
+	segStart := strings.Index(html, "api-help-pop")
 	if segStart < 0 {
-		t.Fatal("index.html 里找不到 api-endpoints 区块 —— " +
-			"委托方要求把支持的协议写在面板上")
+		t.Fatal("index.html 里找不到 api-help-pop 浮层 —— " +
+			"委托方要求支持的协议通过 ? 图标悬停显示（不能删掉这份信息）")
 	}
 	seg := html[segStart:]
-	// 到该区块结束（下一个 </section>）为止
+	// 到浮层结束（下一个 </span> 前的表格收尾）为止；粗切到 </section> 足够。
 	if end := strings.Index(seg, "</section>"); end > 0 {
 		seg = seg[:end]
 	}
@@ -172,7 +179,7 @@ func TestPanelApiEndpointListMatchesRoutes(t *testing.T) {
 		shown[strings.TrimRight(m[1], "/")] = true
 	}
 	if len(shown) == 0 {
-		t.Fatal("没从 api-endpoints 区块解析出任何 /v1 路径 —— " +
+		t.Fatal("没从 api-help-pop 浮层解析出任何 /v1 路径 —— " +
 			"表格结构或 class 名变了，本测试已失效")
 	}
 
@@ -470,64 +477,178 @@ func TestModelChartDrawsOneLinePerModel(t *testing.T) {
 	}
 }
 
-// TestPanelEndpointSectionStaysConcise 守：API 接入页**只列协议 + 特殊情况**，
-// 不许再把它写回大段重复说明。
+// TestPanelEndpointSectionStaysConcise 守 API 接入页的结构与精简度。
 //
-// 委托方 2026-10-09 原话：
+// 委托方两轮要求（2026-10-09）：
 //
-//	「api写的太多了，只需要写支持哪些协议，以及写特殊情况的协议就行了，
-//	  不用重复解释和重复写协议」。
+//	第一轮：「api写的太多了，只需要写支持哪些协议，以及写特殊情况的
+//	        协议就行了，不用重复解释和重复写协议」
+//	第二轮：「在 OpenAI 兼容接口下方再加一个 Anthropic 兼容接口地址，
+//	        要像 OpenAI 兼容接口一样通过复制按钮。
+//	        '鉴权：…' 可以写在下方提示。
+//	        但是支持的协议列表我建议不主动显示，可以在这附近有个问号图标，
+//	        当鼠标指向时才显示这个内容。」
 //
-// 所以这条测试断言：
+// 所以本测试断言**结构**（不是文案）：
 //
-//	· 协议表存在，且列出全部 5 个端点（护栏 TestPanelApiEndpoint... 另守一致性）
-//	· **只有一个** base_url 例外（Anthropic 不带 /v1）
-//	· 没有重复堆叠的解释段落（用端点表数量收敛：只允许 1 张表）
+//	· 两张接入卡片，各有自己的地址 + 密钥 + 复制按钮
+//	· Anthropic 地址与 OpenAI 地址是**不同的两个元素、不同的值**
+//	· 协议表放在默认隐藏的 ? 浮层里（api-help-pop），不再常驻
+//	· 鉴权说明写在卡片下方
+//	· 反向断言：不许再出现已删的重复长解释
 func TestPanelEndpointSectionStaysConcise(t *testing.T) {
 	html := stripHTMLComments(panelAsset(t, "index.html"))
 
-	segStart := strings.Index(html, "api-endpoints")
-	if segStart < 0 {
-		t.Fatal("找不到 api-endpoints 区块")
-	}
-	seg := html[segStart:]
-	if end := strings.Index(seg, "</section>"); end > 0 {
-		seg = seg[:end]
-	}
-
-	// ① 只允许**一张**表（原来有两张：端点表 + base_url 填法表 = 重复）
-	if n := strings.Count(seg, "<table"); n != 1 {
-		t.Errorf("api-endpoints 区块里有 %d 张表 —— 委托方要求精简，"+
-			"协议与 base_url 应合并在一起，不要重复列表", n)
+	// ① 两张卡片各自完整的「地址 + 密钥 + 复制」四件套
+	for _, id := range []string{
+		"apiAddr", "apiKeyView", "btn-copy-base", "btn-copy-key",
+		"apiAddrAnthropic", "apiKeyViewAnthropic",
+		"btn-copy-base-anthropic", "btn-copy-key-anthropic",
+	} {
+		if !strings.Contains(html, `id="`+id+`"`) {
+			t.Errorf("缺少 %q —— OpenAI 与 Anthropic 两张卡都要有"+
+				"地址/密钥/复制按钮（委托方要求 Anthropic 那张与 OpenAI 一样）", id)
+		}
 	}
 
-	// ② 5 个端点都要在
+	// ② 协议表必须**在 ? 浮层里**（默认不显示），不是在页面上平铺
+	popIdx := strings.Index(html, "api-help-pop")
+	if popIdx < 0 {
+		t.Fatal("找不到 api-help-pop —— 委托方要求支持的协议通过 ? 图标悬停显示")
+	}
+	pop := html[popIdx:]
+	if end := strings.Index(pop, "</section>"); end > 0 {
+		pop = pop[:end]
+	}
 	for _, p := range []string{
 		"/v1/chat/completions", "/v1/responses", "/v1/messages",
 		"/v1/messages/count_tokens", "/v1/models",
 	} {
-		if !strings.Contains(seg, p) {
-			t.Errorf("协议表缺少 %s", p)
+		if !strings.Contains(pop, p) {
+			t.Errorf("协议浮层里缺少 %s", p)
 		}
 	}
 
-	// ③ base_url 的两条规则都要在（OpenAI 带 /v1、Anthropic 不带）
-	if !strings.Contains(seg, "api-base-openai") || !strings.Contains(seg, "api-base-anthropic") {
-		t.Error("缺少 base_url 的动态占位（OpenAI 带 /v1 / Anthropic 不带）—— " +
-			"写死端口的话用户改过端口后这段就是错的信息")
-	}
-	if !strings.Contains(seg, "不带") {
-		t.Error("缺少「Anthropic 不带 /v1」这句例外说明 —— " +
-			"那是唯一真正会配错的地方，必须写")
+	// ③ 浮层必须在 `<h2>支持的协议` 附近，且**浮层之外**不许再平铺一张协议表
+	//	（否则就是"说不主动显示、实际还在页面上"）
+	if !strings.Contains(html, "支持的协议") {
+		t.Error("缺少「支持的协议」标题 —— 问号图标要挂在它旁边")
 	}
 
-	// ④ 反向断言：不许再出现重复的长解释（旧的"三种协议共用一个服务，
-	//	但基址不同"那张表和它的说明已删）
-	for _, gone := range []string{"SDK 自动追加", "客户端 / SDK"} {
-		if strings.Contains(seg, gone) {
-			t.Errorf("api-endpoints 区块仍有已删除的重复说明 %q —— "+
-				"委托方要求精简为「支持哪些协议 + 特殊情况」", gone)
+	// ④ Anthropic 地址必须**不带 /v1**的说明在位（最容易配错的一处）
+	if !strings.Contains(html, "不带") {
+		t.Error("缺少「Anthropic 地址不带 /v1」的说明 —— " +
+			"那是唯一真正会配错的地方（带了会拼成 /v1/v1/messages 而 404）")
+	}
+
+	// ⑤ 鉴权说明要在页面上（委托方要求写在下方提示）
+	if !strings.Contains(html, "x-api-key") {
+		t.Error("缺少鉴权说明（Bearer 与 x-api-key 两者都接受）")
+	}
+
+	// ⑥ 反向断言：不许再出现已删除的重复说明
+	for _, gone := range []string{"SDK 自动追加", "客户端 / SDK", "base_url 怎么填"} {
+		if strings.Contains(html, gone) {
+			t.Errorf("仍有已删除的重复说明 %q —— 委托方要求精简", gone)
 		}
+	}
+
+	// ⑦ 反向断言：旧的常驻协议表容器必须已删除（改名成浮层了）
+	if strings.Contains(html, "api-endpoints-title") {
+		t.Error("仍存在 api-endpoints-title —— 常驻协议表应已改为 ? 浮层")
+	}
+}
+
+// TestChartControlsAreClampedToSegment 守：曲线控制点不越出本段两端点的 y 范围。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方实测反馈（2026-10-09）：「为什么线会向下超出坐标轴」
+// ═══════════════════════════════════════════════════════════════════
+//
+//	纯 Catmull-Rom 会**过冲**：某个点是局部最小值（如 0，两侧也是 0
+//	而再外侧在涨）时，切线控制点会被算到该点**下方** ⇒ 曲线拱到 0 以下、
+//	跑出坐标轴，看起来像"用了负 token"。
+//
+//	修法：把每段两个控制点的 y 夹到 [min(p1.y,p2.y), max(p1.y,p2.y)]。
+//	**可证明**不会过冲：三次贝塞尔曲线上的点都是 4 个控制点的凸组合
+//	（权重非负且和为 1），4 个控制点都在 [lo,hi] 内 ⇒ 曲线也在内。
+//
+// 本测试守**源码里确实夹了**（行为侧的证明见下方注释里的推理；
+// 手写 SVG 无法在 Go 测试里渲染，所以这里审实现）。
+//
+// 反向对照：去掉 clampNum 调用，本条立刻红。
+func TestChartControlsAreClampedToSegment(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+	body := funcBody(t, js, "smoothPath")
+
+	if !strings.Contains(body, "clampNum(") {
+		t.Error("smoothPath 没有夹取控制点 —— 曲线会过冲、跑出坐标轴" +
+			"（委托方实测：「为什么线会向下超出坐标轴」）")
+	}
+	// 必须同时夹 c1y 与 c2y（只夹一个仍会从另一端鼓起）
+	for _, want := range []string{"c1y", "c2y"} {
+		if !strings.Contains(body, want+" = clampNum(") {
+			t.Errorf("smoothPath 没有夹取 %s —— 该段的另一端仍会过冲", want)
+		}
+	}
+	// 夹取范围必须是**本段两端点**的 y（lo/hi），不能是别的量
+	if !strings.Contains(body, "Math.min(p1.y, p2.y)") ||
+		!strings.Contains(body, "Math.max(p1.y, p2.y)") {
+		t.Error("夹取范围应为本段两端点的 y 区间 [min(p1.y,p2.y), max(p1.y,p2.y)] —— " +
+			"只有这个区间能保证曲线不越过任一端点")
+	}
+	// x 方向**不该**夹（x 单调递增，夹了会让曲线回折）
+	if strings.Contains(body, "c1x = clampNum(") || strings.Contains(body, "c2x = clampNum(") {
+		t.Error("x 方向不应夹取 —— x 单调递增，夹了可能让曲线回折")
+	}
+}
+
+// TestChartHoverHasPositionedStyle 守：悬停浮层有 absolute 定位样式。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方实测反馈（2026-10-09）：「表格下方出现文字」
+// ═══════════════════════════════════════════════════════════════════
+//
+//	`.chart-hover` 当时**完全没有 CSS 规则** —— 它是个普通 div，
+//	于是内容（日期 + 各线数值）以**正常流**铺在图表下方，
+//	看起来像莫名其妙多出一段文字。`hidden` 属性只保证初始隐藏，
+//	鼠标移入后 tip.hidden=false 就流式展开了。
+//
+// 修法：给 .chart-hover 加 absolute 定位 + 浮层样式，
+//
+//	并显式写 `.chart-hover[hidden] { display:none }` 双保险。
+func TestChartHoverHasPositionedStyle(t *testing.T) {
+	css := panelAsset(t, "style.css")
+
+	idx := strings.Index(css, ".chart-hover")
+	if idx < 0 {
+		t.Fatal("style.css 缺少 .chart-hover 规则 —— " +
+			"浮层会以正常流渲染在图表下方（委托方已实测看到那段文字）")
+	}
+	rule := css[idx:]
+	if end := strings.Index(rule, "}"); end > 0 {
+		rule = rule[:end]
+	}
+	if !strings.Contains(rule, "position: absolute") {
+		t.Errorf(".chart-hover 没有 absolute 定位 —— 它会被当成普通块级元素"+
+			"铺在图表下方。实际规则：%s", rule)
+	}
+	if !strings.Contains(rule, "pointer-events: none") {
+		t.Errorf(".chart-hover 缺少 pointer-events:none —— "+
+			"浮层会挡住热区事件，表现为「鼠标移上去就粘住」。实际：%s", rule)
+	}
+	// 容器必须是定位上下文，否则 absolute 会相对更外层定位、跑到别处
+	boxIdx := strings.Index(css, ".chart-box {")
+	if boxIdx < 0 {
+		t.Fatal("找不到 .chart-box 规则")
+	}
+	boxRule := css[boxIdx:]
+	if end := strings.Index(boxRule, "}"); end > 0 {
+		boxRule = boxRule[:end]
+	}
+	if !strings.Contains(boxRule, "position: relative") {
+		t.Errorf(".chart-box 缺 position:relative —— 浮层的 absolute 会相对"+
+			"更外层定位（跑到页面别处）。实际：%s", boxRule)
 	}
 }
 

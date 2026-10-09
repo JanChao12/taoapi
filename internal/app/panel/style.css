@@ -313,6 +313,56 @@ body {
    混在灰字里会被跳过。 */
 .api-warn { color: #b45309; }
 
+/* ── 「支持的协议」问号 + 悬停展开（2026-10-09 委托方要求默认不显示）──
+   委托方原话：「支持的协议列表我建议不主动显示，可以在这附近有个问号
+              图标，当鼠标指向时才显示这个内容」。
+   ⚠️ 用 CSS :hover / :focus-within 而不是 JS：
+     · 无状态，不会与 5 秒轮询重建 DOM 打架
+     · 键盘 Tab 到它也展开（:focus-within），可访问性免费拿到 */
+.api-help {
+  position: relative;
+  display: inline-block;
+  margin-left: 6px;
+  cursor: help;
+  outline: none;
+}
+.api-help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #eef0f3;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.api-help:hover .api-help-icon,
+.api-help:focus-within .api-help-icon { background: #16a34a; color: #fff; }
+
+/* 浮层：默认不可见，悬停/聚焦才出现。 */
+.api-help-pop {
+  position: absolute;
+  left: 0;
+  top: 22px;
+  z-index: 20;
+  display: none;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+  padding: 10px 12px;
+  min-width: 340px;
+}
+.api-help:hover .api-help-pop,
+.api-help:focus-within .api-help-pop { display: block; }
+.api-help-title { display: block; font-size: 12px; color: #4a5058; margin-bottom: 6px; font-weight: 600; }
+.api-help-pop .tbl { font-size: 12px; }
+.api-help-pop .tbl td { padding: 4px 8px 4px 0; border: none; white-space: nowrap; }
+.api-help-pop .tbl td + td { color: #6b7280; padding-left: 12px; }
+
 /* 通用隐藏类：只控制 .page 的那个不够用（警示条等非页面元素也要能隐藏）。
    用 !important 是刻意的 —— 这些元素可能带 display 的其它规则，
    而"隐藏"必须是确定的，不能被样式顺序影响。 */
@@ -482,13 +532,41 @@ body {
 }
 .chart-title { font-size: 13px; color: #4a5058; margin-bottom: 8px; }
 .chart-title .chart-unit { font-size: 11px; color: #a8aeb6; margin-left: 8px; }
-.chart-box { width: 100%; }
+/* 图表容器**必须**是定位上下文 —— 悬停浮层用 absolute 定位挂在它上面。 */
+.chart-box { width: 100%; position: relative; }
 .chart-box svg { display: block; width: 100%; height: auto; }
 .chart-empty { color: #b0b6bd; font-size: 12px; text-align: center; padding: 46px 0; }
 .chart-grid { stroke: #eef0f3; stroke-width: 1; }
 .chart-axis-label { font-size: 10px; fill: #a8aeb6; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 11px; color: #6b7280; }
 .chart-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+/* 悬停浮层（2026-10-09 加）。
+   🔴 之前**完全没有这条规则** —— 浮层是个普通 div，于是它的内容
+   （日期 + 各线数值）以**正常流**渲染在图表下方，看起来像
+   "表格下方冒出一段莫名其妙的文字"（委托方实测反馈）。
+   `hidden` 属性只保证了初始隐藏，鼠标移入后内容就流式铺开了。
+   现在用 absolute 定位 + 浮层样式，它才是真正的 tooltip。 */
+.chart-hover {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;          /* 不能挡住热区的事件（否则浮层会"粘住"鼠标） */
+  background: rgba(31, 35, 41, .92);
+  color: #fff;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+  max-width: 260px;
+}
+.chart-hover[hidden] { display: none; }   /* 双保险：属性 + 规则 */
+.chart-tip-date { font-weight: 600; margin-bottom: 3px; opacity: .85; }
+.chart-tip-row { display: flex; align-items: center; gap: 6px; }
+.chart-tip-row i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.chart-tip-name { overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+.chart-tip-row b { margin-left: auto; font-variant-numeric: tabular-nums; }
 
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 

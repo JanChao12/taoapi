@@ -229,43 +229,70 @@
           <code class="api-base" id="apiKeyView">—</code>
           <button type="button" class="btn btn-sm" id="btn-copy-key">复制</button>
         </div>
+      </section>
 
-        <!-- 🔴 支持的协议 + base_url 例外（2026-10-09 委托方要求"只写支持哪些
-              协议和特殊情况的"，不要重复解释、不要重复写协议）。
+      <!-- Anthropic 兼容接口（2026-10-09 委托方要求）：
+           「在 OpenAI 兼容接口下方再加一个 Anthropic 兼容接口地址，
+             要像 OpenAI 兼容接口一样通过复制按钮」。
+           ⚠️ 地址与 OpenAI 的**不同**：Anthropic SDK 自己会追加
+              /v1/messages，所以这里给的是**不带 /v1** 的 origin。
+              这正是最容易配错的一处，单独一张卡 + 复制按钮最不容易搞错。 -->
+      <section class="panel">
+        <h2>Anthropic 兼容接口</h2>
+        <div class="api-base-row">
+          <span class="api-label">接口地址</span>
+          <code class="api-base" id="apiAddrAnthropic">—</code>
+          <button type="button" class="btn btn-sm" id="btn-copy-base-anthropic">复制</button>
 
-              为什么要写：`/v1` 只是前缀，不是"任何端点都能用" —— 用户拿
-              `/v1/completions` 之类来试会 404，却分不清是"服务没实现"
-              还是"自己配错了"。把白名单摆出来即可。
+          <span class="api-label api-label-gap">API Key</span>
+          <code class="api-base" id="apiKeyViewAnthropic">—</code>
+          <button type="button" class="btn btn-sm" id="btn-copy-key-anthropic">复制</button>
+        </div>
 
-              ⚠️ 只有**一个**特殊情况值得写：Anthropic SDK 的 base_url
-                 **不带 /v1**（它自己会追加），带了会拼成 /v1/v1/messages。
-                 其余 SDK 一律填 .../v1。
+        <!-- 鉴权说明写在下方（委托方要求）。
+             只说"两者都接受" —— 不再按端点分头写哪个头，
+             实测两种头在所有端点上都被接受，分头写反而误导。 -->
+        <div class="hint-text st-hint-block">
+          <b>鉴权</b>：<code>Authorization: Bearer &lt;API Key&gt;</code> 或
+          <code>x-api-key: &lt;API Key&gt;</code>（两者都接受）。
+          <br>
+          ⚠️ 本地址<b>不带 <code>/v1</code></b> —— Anthropic SDK 会自己追加
+          <code>/v1/messages</code>；写成 <code>…/v1</code> 会拼成
+          <code>/v1/v1/messages</code> 而 404。
+        </div>
+      </section>
 
-              ⚠️ 路径必须与 server.go 里 mux 的注册一一对应 ——
-                 有测试（TestPanelApiEndpointListMatchesRoutes）守着。 -->
-        <div class="api-endpoints">
-          <div class="api-endpoints-title">支持的协议（其余 <code>/v1/*</code> 一律 404）</div>
-          <table class="tbl">
-            <thead>
-              <tr><th>协议</th><th>路径</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>OpenAI Chat</td><td class="mono">/v1/chat/completions</td></tr>
-              <tr><td>OpenAI Responses</td><td class="mono">/v1/responses</td></tr>
-              <tr><td>Anthropic Messages</td><td class="mono">/v1/messages</td></tr>
-              <tr><td>Anthropic 计数</td><td class="mono">/v1/messages/count_tokens</td></tr>
-              <tr><td>模型列表</td><td class="mono">/v1/models</td></tr>
-            </tbody>
-          </table>
-          <div class="hint-text" style="margin-top:8px;">
-            <b>base_url</b>：OpenAI 系填 <code id="api-base-openai">…/v1</code>；
-            <b>Anthropic 系填</b> <code id="api-base-anthropic">…</code>
-            <span class="api-warn">← 不带 <code>/v1</code>，它自己追加；带了会 404</span>
-          </div>
-          <div class="hint-text" style="margin-top:4px;">
-            <b>鉴权</b>：<code>Authorization: Bearer &lt;API Key&gt;</code> 或
-            <code>x-api-key: &lt;API Key&gt;</code>（两者都接受）
-          </div>
+      <!-- 支持的协议：**默认不显示**，鼠标指向标题旁的 ? 才展开
+           （2026-10-09 委托方要求：「支持的协议列表我建议不主动显示，
+             可以在这附近有个问号图标，当鼠标指向时才显示这个内容」）。
+
+           为什么仍然保留：`/v1` 只是前缀，用户拿 `/v1/completions`
+           来试会 404，分不清是"服务没实现"还是"自己配错了" ——
+           需要一个能查的地方，但不必常驻占版面。
+
+           ⚠️ 路径必须与 server.go 里 mux 的注册一一对应 ——
+              有测试（TestPanelApiEndpointListMatchesRoutes）守着。
+           ⚠️ 用 CSS :hover / :focus-within 展开而不是 JS：无状态、
+              不与轮询打架，且键盘 Tab 过去也能展开。 -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>支持的协议
+            <span class="api-help" tabindex="0" aria-label="查看支持的协议">
+              <span class="api-help-icon">?</span>
+              <span class="api-help-pop" role="tooltip">
+                <span class="api-help-title">支持的协议（其余 <code>/v1/*</code> 一律 404）</span>
+                <table class="tbl">
+                  <tbody>
+                    <tr><td class="mono">/v1/chat/completions</td><td>OpenAI Chat</td></tr>
+                    <tr><td class="mono">/v1/responses</td><td>OpenAI Responses</td></tr>
+                    <tr><td class="mono">/v1/messages</td><td>Anthropic Messages</td></tr>
+                    <tr><td class="mono">/v1/messages/count_tokens</td><td>Anthropic 计数</td></tr>
+                    <tr><td class="mono">/v1/models</td><td>模型列表</td></tr>
+                  </tbody>
+                </table>
+              </span>
+            </span>
+          </h2>
         </div>
       </section>
 
@@ -460,13 +487,6 @@
 
             <span class="hint-text st-hint-block">
               默认<b>关闭</b>。开启后，服务启动时会立刻给未签到的账号签到一次（按北京时间判定当天），此后每 30 分钟检查一次；关闭后立即停止后续调度。
-            </span>
-            <span class="hint-text st-hint-block">
-              无账号时显示「—」（不会执行、也不会发上游请求）。单账号的签到日期见「账号管理」页。
-              <br>
-              ⚠️ <b>成功数比账号数少是正常的</b>：<b>国际版账号不参与签到</b>
-              （上游没有签到活动，实测调用会返回"签到活动未开启或已过期"），
-              所以 4 个账号里若有 1 个国际版，这里就会显示「3 个成功」。
             </span>
           </div>
         </div>
