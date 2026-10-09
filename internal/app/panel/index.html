@@ -439,25 +439,28 @@
               <button type="button" class="st-toggle" id="st-auto-checkin" role="switch" aria-checked="false" aria-label="自动签到"></button>
               <span class="st-toggle-state" id="st-sum-auto-checkin">自动签到当前：—</span>
             </div>
-            <span class="hint-text st-hint-block">
-              默认<b>关闭</b>。开启后，服务启动时会立刻给未签到的账号签到一次（按北京时间判定当天），此后每 30 分钟检查一次；关闭后立即停止后续调度。
-            </span>
-          </div>
-        </div>
 
-        <div class="st-row">
-          <div class="st-row-label">运行状态</div>
-          <div class="st-row-body">
-            <div class="st-line">
-              <span class="st-toggle-state">已启用/已停用：</span>
-              <span class="st-value-plain" id="st-checkin-state">—</span>
-              <span class="st-toggle-state" style="margin-left:12px;">上次触发：</span>
+            <!-- 运行状态并进本栏（2026-10-09 委托方要求：
+                 「不需要单独显示运行状态，集成在自动签到栏，只需要
+                  '上次触发：'和'结果：'这两条写到自动签到栏。
+                  运行状态栏删掉」）。
+                 ⇒ 删掉独立的「运行状态」行，只把这两条移到开关下方。
+                    ⚠️ 「已启用/已停用」那条**去掉**了 —— 它和上面
+                    「自动签到当前：已启用」是同一件事，重复显示。
+                    ⚠️ id 保持不变（st-checkin-at / st-checkin-result）——
+                    settings.js 与 panel_features_test.go 都按它们取。 -->
+            <div class="st-line" style="margin-top:6px;">
+              <span class="st-toggle-state">上次触发：</span>
               <span class="st-value-plain" id="st-checkin-at">—</span>
             </div>
-            <div class="st-line" style="margin-top:6px;">
+            <div class="st-line" style="margin-top:4px;">
               <span class="st-toggle-state">结果：</span>
               <span class="st-value-plain" id="st-checkin-result">—</span>
             </div>
+
+            <span class="hint-text st-hint-block">
+              默认<b>关闭</b>。开启后，服务启动时会立刻给未签到的账号签到一次（按北京时间判定当天），此后每 30 分钟检查一次；关闭后立即停止后续调度。
+            </span>
             <span class="hint-text st-hint-block">
               无账号时显示「—」（不会执行、也不会发上游请求）。单账号的签到日期见「账号管理」页。
               <br>

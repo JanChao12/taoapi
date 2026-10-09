@@ -187,7 +187,7 @@ func TestPanelKeepaliveToggleWired(t *testing.T) {
 	}
 }
 
-// TestPanelCheckinRuntimeContract 守签到「运行状态」一行的前后端契约。
+// TestPanelCheckinRuntimeContract 守签到运行状态的前后端契约。
 //
 // 🔴 守的是一条**真实且持续了很久**的缺陷（2026-10-09 发现）：
 //
@@ -202,19 +202,37 @@ func TestPanelKeepaliveToggleWired(t *testing.T) {
 //   - 前端读取的对象名：d.checkinRun
 //   - 对象内部字段：lastRunAt / lastResult / skippedNoAccounts
 //
+// ⚠️ 2026-10-09 委托方又要求「运行状态」整行删掉、只把"上次触发"与
+//
+//	"结果"两条并进「自动签到」栏 ⇒ 本测试同步：
+//	  · 只断言 st-checkin-at / st-checkin-result 两个 id
+//	  · **反向断言** st-checkin-state 必须不存在（它已被删除，
+//	    留着会让"开关状态"重复显示两遍）
+//
 // ⚠️ 必须**先剥注释**再断言：本文件里 checkinRuntime 的注释**故意**
 //
 //	写下了那些已废弃的旧字段名（解释"为什么不再猜字段名"），
 //	全文匹配会把注释误判成"代码里还在猜"。
 func TestPanelCheckinRuntimeContract(t *testing.T) {
 	js := stripJSComments(panelAsset(t, "settings.js"))
-	html := panelAsset(t, "index.html")
+	html := stripHTMLComments(panelAsset(t, "index.html"))
 
-	// HTML：这一行的三个状态位必须在
-	for _, want := range []string{"st-checkin-state", "st-checkin-at", "st-checkin-result"} {
+	// HTML：运行状态只剩这两个状态位（并进「自动签到」栏）
+	for _, want := range []string{"st-checkin-at", "st-checkin-result"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html 缺少 %q", want)
 		}
+	}
+	// 🔴 反向断言：独立的「运行状态」行与其"已启用/已停用"元素必须已删除。
+	//
+	//	委托方原话：「不需要单独显示运行状态，集成在自动签到栏，只需要
+	//	              '上次触发：'和'结果：'这两条写到自动签到栏。运行状态栏删掉」。
+	//	st-checkin-state 显示的是"已启用/已停用"，与上面
+	//	st-sum-auto-checkin（自动签到当前：已启用）**是同一件事**，
+	//	留着就是重复。删干净才是他要的。
+	if strings.Contains(html, "st-checkin-state") {
+		t.Error("index.html 仍有 st-checkin-state —— 该元素随「运行状态」行" +
+			"一起删除（它与「自动签到当前：已启用」重复）")
 	}
 
 	// JS：只认 checkinRun 这**一个**权威契约
@@ -227,6 +245,11 @@ func TestPanelCheckinRuntimeContract(t *testing.T) {
 			t.Errorf("settings.js 没有读 checkinRun 的 %q（契约字段对不上）", want)
 		}
 	}
+	// 反向：JS 不许再往已删除的元素写
+	if strings.Contains(js, "st-checkin-state") {
+		t.Error("settings.js 仍在写 st-checkin-state —— 该元素已删除，" +
+			"写它只会静默无效（setText 找不到元素就什么都不做）")
+	}
 
 	// 🔴 反向断言：那几个"猜出来的"字段名**不许**再出现在代码里。
 	//	它们从来不存在，留着只会让下一次契约变更继续被静默吞掉。
@@ -238,6 +261,56 @@ func TestPanelCheckinRuntimeContract(t *testing.T) {
 			t.Errorf("settings.js 的代码里仍有已废弃的猜测字段 %q —— "+
 				"这会让前后端字段名不一致重新变成静默失败", bad)
 		}
+	}
+}
+
+// TestCheckinRuntimeMergedIntoAutoCheckinRow 守：「运行状态」行已删，
+// 两条运行信息并进「自动签到」栏。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方原话（2026-10-09）：
+//
+//	「不需要单独显示运行状态，集成在自动签到栏，只需要"上次触发："
+//	  和"结果："这两条写到自动签到栏。运行状态栏删掉。」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// 这条测试守的是**版块归属**，不是单个元素存不存在 —— 光断言
+// "id 还在"无法区分"并进了自动签到栏"与"仍留在独立的一行里"。
+//
+// 做法：按 HTML 里 `st-row-label` 切块，断言这两个 id 落在
+// 「自动签到」那一块内，且**不存在**标签为「运行状态」的块。
+//
+// 反向对照：把这两行挪回一个独立的 `<div class="st-row">` 并给它
+// `st-row-label` = 运行状态 → 本条立刻红。
+func TestCheckinRuntimeMergedIntoAutoCheckinRow(t *testing.T) {
+	html := stripHTMLComments(panelAsset(t, "index.html"))
+
+	// 取「自动签到」这一块：从它的 label 到下一个 st-row 之前。
+	idx := strings.Index(html, ">自动签到<")
+	if idx < 0 {
+		t.Fatal("找不到「自动签到」栏")
+	}
+	rest := html[idx:]
+	// 下一个 st-row-label 就是下一栏的起点
+	if next := strings.Index(rest[1:], `class="st-row-label"`); next > 0 {
+		rest = rest[:next+1]
+	}
+
+	for _, want := range []string{"st-checkin-at", "st-checkin-result"} {
+		if !strings.Contains(rest, want) {
+			t.Errorf("「上次触发/结果」(%s) 不在「自动签到」栏内 —— "+
+				"委托方要求把这两条并进自动签到栏", want)
+		}
+	}
+
+	// 🔴 反向断言：整份 HTML 里不许再有「运行状态」这个栏目标签。
+	//
+	//	⚠️ 只查 st-row-label 位置，避免误伤「重启状态」等其它含"状态"的
+	//	  标签，也避免匹配到注释（已先 stripHTMLComments）。
+	if strings.Contains(html, ">运行状态<") {
+		t.Error("index.html 仍有独立的「运行状态」栏 —— " +
+			"委托方要求删掉它，只把「上次触发」与「结果」并进自动签到栏")
 	}
 }
 

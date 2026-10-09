@@ -412,8 +412,12 @@
     setText('st-sum-api-key', '接口密钥：' + apiKeyLine);
     setText('st-sum-port', '监听端口：' + ((d.port === null || d.port === undefined) ? '—' : d.port));
 
+    // 签到的运行状态（上次触发 / 结果）——
+    // 🔴 不再更新 st-checkin-state：那个「已启用/已停用」元素随
+    //	"运行状态"整行一起删掉了（2026-10-09 委托方要求：运行状态并进
+    //	自动签到栏，且只保留"上次触发"与"结果"两条）。
+    //	开关状态上面 st-sum-auto-checkin 已经表达了，重复一条没意义。
     var rt = checkinRuntime(d);
-    setText('st-checkin-state', autoCheckin ? '已启用' : '已停用');
     setText('st-checkin-at', rt.at);
     setText('st-checkin-result', rt.result);
 
