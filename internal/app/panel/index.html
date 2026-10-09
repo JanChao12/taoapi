@@ -214,12 +214,46 @@
 
     <!-- ══════════ 页：API 接入 ══════════ -->
     <section class="page hidden" id="page-api">
-      <section class="panel">
-        <h2>OpenAI 兼容接口</h2>
+      <!-- 🔴 三块并入**同一张卡片**，且「支持的协议」在最上面
+           （2026-10-09 委托方要求：「这3个放到同一个卡片中，不需要分3个卡片，
+             支持的协议放到最上面」）。
 
-        <!-- 接入信息：地址 + 密钥**同一行**（2026-10-06 委托方要求）。
+           原来它们是三张独立 .panel，每张都带阴影与间距 —— 同一件事
+           （怎么接入）被切成三段，视线要跳两次。
+
+           ⚠️ 「支持的协议」仍保持**问号悬停展开**，不常驻：
+             那是委托方更早的明确要求（「支持的协议列表我建议不主动显示，
+             可以在这附近有个问号图标，当鼠标指向时才显示这个内容」）。
+             「放到最上面」说的是**位置**，不是"改成常驻显示"。
+
+           ⚠️ 协议路径必须与 server.go 里 mux 的注册一一对应 ——
+              有测试（TestPanelApiEndpointListMatchesRoutes）守着。 -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>支持的协议
+            <span class="api-help" tabindex="0" aria-label="查看支持的协议">
+              <span class="api-help-icon">?</span>
+              <span class="api-help-pop" role="tooltip">
+                <span class="api-help-title">支持的协议（其余 <code>/v1/*</code> 一律 404）</span>
+                <table class="tbl">
+                  <tbody>
+                    <tr><td class="mono">/v1/chat/completions</td><td>OpenAI Chat</td></tr>
+                    <tr><td class="mono">/v1/responses</td><td>OpenAI Responses</td></tr>
+                    <tr><td class="mono">/v1/messages</td><td>Anthropic Messages</td></tr>
+                    <tr><td class="mono">/v1/messages/count_tokens</td><td>Anthropic 计数</td></tr>
+                    <tr><td class="mono">/v1/models</td><td>模型列表</td></tr>
+                  </tbody>
+                </table>
+              </span>
+            </span>
+          </h2>
+        </div>
+
+        <!-- ── OpenAI 兼容接口 ──
+             接入信息：地址 + 密钥**同一行**（2026-10-06 委托方要求）。
              「不要模型名，以及api key放到接口地址的右边而不是下方」——
              地址与密钥是配客户端时**必须同时填**的两项，并排更方便对照。 -->
+        <h3 class="api-sub-title">OpenAI 兼容接口</h3>
         <div class="api-base-row">
           <span class="api-label">接口地址</span>
           <code class="api-base" id="apiAddr">—</code>
@@ -229,16 +263,12 @@
           <code class="api-base" id="apiKeyView">—</code>
           <button type="button" class="btn btn-sm" id="btn-copy-key">复制</button>
         </div>
-      </section>
 
-      <!-- Anthropic 兼容接口（2026-10-09 委托方要求）：
-           「在 OpenAI 兼容接口下方再加一个 Anthropic 兼容接口地址，
-             要像 OpenAI 兼容接口一样通过复制按钮」。
-           ⚠️ 地址与 OpenAI 的**不同**：Anthropic SDK 自己会追加
-              /v1/messages，所以这里给的是**不带 /v1** 的 origin。
-              这正是最容易配错的一处，单独一张卡 + 复制按钮最不容易搞错。 -->
-      <section class="panel">
-        <h2>Anthropic 兼容接口</h2>
+        <!-- ── Anthropic 兼容接口（2026-10-09 委托方要求）──
+             ⚠️ 地址与 OpenAI 的**不同**：Anthropic SDK 自己会追加
+                /v1/messages，所以这里给的是**不带 /v1** 的 origin。
+                这正是最容易配错的一处，所以单独一行 + 复制按钮。 -->
+        <h3 class="api-sub-title">Anthropic 兼容接口</h3>
         <div class="api-base-row">
           <span class="api-label">接口地址</span>
           <code class="api-base" id="apiAddrAnthropic">—</code>
@@ -259,40 +289,6 @@
           ⚠️ 本地址<b>不带 <code>/v1</code></b> —— Anthropic SDK 会自己追加
           <code>/v1/messages</code>；写成 <code>…/v1</code> 会拼成
           <code>/v1/v1/messages</code> 而 404。
-        </div>
-      </section>
-
-      <!-- 支持的协议：**默认不显示**，鼠标指向标题旁的 ? 才展开
-           （2026-10-09 委托方要求：「支持的协议列表我建议不主动显示，
-             可以在这附近有个问号图标，当鼠标指向时才显示这个内容」）。
-
-           为什么仍然保留：`/v1` 只是前缀，用户拿 `/v1/completions`
-           来试会 404，分不清是"服务没实现"还是"自己配错了" ——
-           需要一个能查的地方，但不必常驻占版面。
-
-           ⚠️ 路径必须与 server.go 里 mux 的注册一一对应 ——
-              有测试（TestPanelApiEndpointListMatchesRoutes）守着。
-           ⚠️ 用 CSS :hover / :focus-within 展开而不是 JS：无状态、
-              不与轮询打架，且键盘 Tab 过去也能展开。 -->
-      <section class="panel">
-        <div class="panel-head">
-          <h2>支持的协议
-            <span class="api-help" tabindex="0" aria-label="查看支持的协议">
-              <span class="api-help-icon">?</span>
-              <span class="api-help-pop" role="tooltip">
-                <span class="api-help-title">支持的协议（其余 <code>/v1/*</code> 一律 404）</span>
-                <table class="tbl">
-                  <tbody>
-                    <tr><td class="mono">/v1/chat/completions</td><td>OpenAI Chat</td></tr>
-                    <tr><td class="mono">/v1/responses</td><td>OpenAI Responses</td></tr>
-                    <tr><td class="mono">/v1/messages</td><td>Anthropic Messages</td></tr>
-                    <tr><td class="mono">/v1/messages/count_tokens</td><td>Anthropic 计数</td></tr>
-                    <tr><td class="mono">/v1/models</td><td>模型列表</td></tr>
-                  </tbody>
-                </table>
-              </span>
-            </span>
-          </h2>
         </div>
       </section>
 
@@ -645,8 +641,16 @@
   </div>
 </div>
 
+<!-- 🔴 app.js 只能加载【一次】（2026-10-09 实测修）。
+     这里原先写了两遍 app.js（从首个提交起就在），而 app.js 是自执行
+     IIFE ⇒ 页面里跑着**两个互相独立的应用实例**，各有自己的 pagerState。
+     实测后果（CDP 驱动真实 Chrome）：
+       · 切走再切回用量统计页 → 页码从 2 被重置回 1（两个实例各写一次，
+         后写者赢），而「刷新」按钮因为带 `btn.disabled` 防重只跑一个实例，
+         页码能保持 ⇒ 委托方观察到"手动刷新和切页不一样"
+       · 轮询定时器挂了两份 ⇒ 面板一直发**双倍**请求
+     管控护栏：TestPanelLoadsAppScriptExactlyOnce。 -->
 <script src="/panel/app.js"></script>
 <script src="/panel/settings.js"></script>
-<script src="/panel/app.js"></script>
 </body>
 </html>

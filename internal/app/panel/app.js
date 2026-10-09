@@ -347,6 +347,35 @@
         '">上游限流</span>'
       : '';
 
+    // ── 按模型的限流提示（2026-10-09 加账号+模型限流）──
+    //
+    // 🔴 为什么必须单独显示：
+    //
+    //	限流现在是**按模型**的（委托方实测：DeepSeek 被限后切 glm 可用），
+    //	所以账号本身状态是"正常"。若面板只说"正常"，用户就完全看不到
+    //	"deepseek 被限到 21:24"这个事实 —— 明明还能用别的模型，
+    //	却因为看不到原因而以为服务坏了。
+    //
+    // ⚠️ 与上面的账号级限流互斥：模型级限流时账号级是正常的，
+    //	所以两者不会同时出现（真同时出现说明有 bug，两个都显示也无害）。
+    // ⚠️ 逐个模型列出，按点击顺序无关（对象键序不稳，故排序后显示）。
+    var modelCoolHtml = '';
+    if (a.model_cooldowns) {
+      var mcNames = Object.keys(a.model_cooldowns).sort();
+      if (mcNames.length) {
+        var parts = [];
+        for (var mi = 0; mi < mcNames.length; mi++) {
+          var mname = mcNames[mi];
+          var muntil = String(a.model_cooldowns[mname]).replace('T', ' ').slice(0, 19);
+          // 表格里只显示**去前缀的末段**（列宽有限），完整名进 title
+          parts.push('<span title="' + esc(mname) + ' 限流至 ' + esc(muntil) + '">' +
+            esc(shortSeriesName(mname)) + '</span>');
+        }
+        modelCoolHtml = '<span class="acct-modellimit" title="这些模型在上游被限流，' +
+          '该账号的其他模型仍然可用">🚫 ' + parts.join('、') + '</span>';
+      }
+    }
+
     // ── 按钮 ──
     var toggle = a.manual_disabled
       ? '<button type="button" data-act="enable" data-uid="' + esc(a.uid) + '">启用</button>'
@@ -393,6 +422,32 @@
         '⚡ 当前优先</span>'
       : '';
 
+    // ── 状态槽：正常账号显示「正常」，被限流的模型也显示在**同一个位置** ──
+    //
+    // 🔴 2026-10-09 委托方要求（原话）：
+    //
+    //	「我建议正常的账号在那里显示状态正常，限流的账号那里显示限流模型，
+    //	  这样每一个卡片的宽度大小都是一样的」
+    //
+    //	上一版把模型限流放在**单独一行** ⇒ 被限流的卡片比正常的卡片多一行，
+    //	同一排里高度参差、看着不齐（.acct-grid 用 align-items:start，
+    //	卡片高度各自自适应）。
+    //	⇒ 改成与状态徽章**共用同一个槽位**：有模型限流时用橙色徽章占那个位置，
+    //	  没有时是原来的绿色「正常」徽章。两者互斥，行数因此一致。
+    //
+    // ⚠️ 严重度优先：账号级状态**不是** normal 时（凭证失效/封号/额度耗尽…）
+    //	必须显示那个更严重的状态 —— 不能被"模型限流"顶掉，
+    //	否则用户会以为号只是限流、实际却需要重新授权。
+    //	（真出现"账号异常 + 模型限流"同时存在时，状态徽章胜出。）
+    var statusSlotHtml;
+    if (a.status !== 'normal' && st !== 'normal') {
+      statusSlotHtml = '<span class="badge ' + badgeCls + '">' + esc(a.status_label || st) + '</span>';
+    } else if (modelCoolHtml) {
+      statusSlotHtml = modelCoolHtml;
+    } else {
+      statusSlotHtml = '<span class="badge ' + badgeCls + '">' + esc(a.status_label || st) + '</span>';
+    }
+
     return '<div class="acct-card' + (a.manual_disabled ? ' acct-card-disabled' : '')
       + (a.in_use ? ' acct-card-inuse' : '') + '">'
       + '<div class="acct-head">'
@@ -400,7 +455,7 @@
       +   '<span class="acct-name">' + esc(a.nickname || a.uid) + '</span>'
       +   noteHtml
       +   inUseHtml
-      +   '<span class="badge ' + badgeCls + '">' + esc(a.status_label || st) + '</span>'
+      +   statusSlotHtml
       + '</div>'
       + '<div class="acct-credit-row">' + creditHtml + pkgCountHtml + creditAt + '</div>'
       + pkgHtml
@@ -1364,7 +1419,14 @@
     // 🔴 首末两个标签要**贴边对齐**，不能居中 —— 居中的话最后一个会
     //	有一半伸到绘图区右边界之外、被 viewBox 裁掉（委托方截图里的
     //	「10-09」就是被裁的）。首标签同理（会压到纵轴标签上）。
-    var step = Math.max(1, Math.ceil(n / 6));
+    // 🔴 上限取 7（2026-10-09 委托方要求：「表格中要显示7个日期，
+    //	四个太少了」）。
+    //
+    //	原实现是 `Math.ceil(n / 6)`：7 天档（n=7）算出 step=2，
+    //	只标注 0/2/4/6 共 **4** 个日期 —— 正是委托方看到的那张图。
+    //	改成 7 之后：n=7 ⇒ step=1 ⇒ **7 个全标**；30 天 ⇒ step=5 ⇒ 7 个；
+    //	365 天 ⇒ step=53 ⇒ 7 个。既满足 7 天档，也不会在长区间里糊成一片。
+    var step = Math.max(1, Math.ceil(n / 7));
     var shownIdx = [];
     for (var xi = 0; xi < n; xi += step) {
       shownIdx.push(xi);
@@ -1619,14 +1681,20 @@
       // 列已按委托方 2026-10-09 要求砍到 4 列：
       //   模型 / 调用 / Tokens / 积分
       //
-      // 🔴 模型名在**表格里**去掉渠道前缀（`workbuddy/deepseek-v4.1-flash`
-      //	→ `deepseek-v4.1-flash`），委托方要求：
-      //	「再缩减 1/3 的账号名和模型名提供更多空间给表格」。
-      //	完整 ID 放进 title，鼠标停上去仍能看到。
-      //	⚠️ 前缀不是"没用"（它区分平台），所以要去掉的是**显示**，
-      //	  不是数据 —— 图表图例、图表 tooltip 也各自处理过。
+      // 🔴 模型名**保留渠道前缀**（`workbuddy/deepseek-v4.1-flash`）。
+      //
+      //	委托方 2026-10-09 明确更正：
+      //	  「模型用量的模型名把渠道前缀加回来，我当时只是说可以考虑
+      //	    剪短间隔而不是内容」
+      //	⇒ 上一版我把"缩减 1/3"理解成了**砍名字内容**（去掉前缀），
+      //	  那是**理解错了** —— 他要缩减的是列间距，不是名字本身。
+      //
+      //	⚠️ 前缀不是"装饰"：它是**多平台下区分同名模型的唯一线索**
+      //	  （`workbuddy/` 国内版、`workbuddyai/` 国际版，
+      //	   两边的 glm-5.3 倍率与能力都不同）。去掉它，两个平台的同名
+      //	   模型在表里会长得一模一样，无法分辨。
       html += '<tr>'
-        + '<td class="mono" title="' + esc(m.model) + '">' + esc(shortSeriesName(m.model)) + '</td>'
+        + '<td class="mono">' + esc(m.model) + '</td>'
         + '<td class="num">' + fmtInt(m.requests) + '</td>'
         + '<td class="num">' + fmtNum(m.total_tokens) + '</td>'
         + '<td class="num">' + (m.credits === null || m.credits === undefined ? '—' : Number(m.credits).toFixed(2)) + '</td>'
@@ -1716,6 +1784,23 @@
 
   function renderUsageLog(d) {
     usageLogRaw = d.entries || [];
+
+    // 🔴 每次拉到新数据都把明细表翻回**第 1 页**（2026-10-09 委托方要求）。
+    //
+    //	委托方原话：「我要求的是回到第一页」——
+    //	他观察到两个入口行为不一致：「我通过看其他页面再回到调用记录会
+    //	刷新并回到第一页，但是手动刷新不会回到第一页」。
+    //
+    //	要求是两者**都回到第 1 页**（刷新的语义就是"从头看最新的一批"，
+    //	而新数据到达后旧页码对应的内容也已变化，"回到最新"是唯一自洽的
+    //	口径）。所以在这里显式重置，而不是依赖某个入口的副作用 ——
+    //	原先"切页会重置"只是两个 IIFE 实例互相覆盖的**偶然产物**
+    //	（见 index.html 里 app.js 只许加载一次的说明），不可依赖。
+    //
+    //	⚠️ 只影响"重新拉数据"这一动作：翻页走 drawUsageLog()，不经过这里，
+    //	  所以点「下一页」仍停在目标页，不会被弹回。
+    pagerState.log.page = 1;
+
     var note = document.getElementById('usage-log-note');
     if (note) {
       // 让用户知道后端一共命中了多少（明细只取最近 limit 条）

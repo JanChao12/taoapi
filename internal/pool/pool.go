@@ -153,6 +153,32 @@ type Account struct {
 	// 与 Status 的自动状态分离，避免自动逻辑清掉人工设置。
 	Disabled bool
 
+	// ModelCooldowns 按模型的冷却截止时间（模型 ID → 截止时刻）。
+	//
+	// ═══════════════════════════════════════════════════════════════════
+	// 🔴 为什么需要它（2026-10-09 委托方实测要求）
+	// ═══════════════════════════════════════════════════════════════════
+	//
+	// 上游的 429 是**按模型**限流的。委托方原话：
+	//
+	//	「上游的限流我实测之前使用DeepSeek过多导致限制，
+	//	  我切换glm后能正常使用」
+	//
+	// 这与上游 429 响应体里那句「您也可以切换其他模型继续使用」完全吻合。
+	//
+	// ⇒ 若只用账号级 CooldownUntil，一个模型被限流会把该账号上
+	//   **其他仍然可用的模型**一起冻住 —— 恰好丢掉上游给的退路。
+	//   所以限流冷却必须按 (账号, 模型) 记录。
+	//
+	// ⚠️ 与 CooldownUntil 的分工：
+	//	· CooldownUntil        —— **账号级**问题（超时/未知故障/凭证等）
+	//	· ModelCooldowns[模型] —— **模型级**限流
+	//	两者任一未过期，该账号在对应场景下都不可调度。
+	//
+	// ⚠️ 为空 map 与 nil 等价（都表示"没有任何模型在冷却"），
+	//	不要用 len()==0 判断"该账号被限流"。
+	ModelCooldowns map[string]time.Time
+
 	// Packages 各额度包明细，用于算最早到期日。
 	Packages []Package
 }
@@ -281,15 +307,43 @@ func (s *Selector) SetClock(f func() time.Time) {
 	}
 }
 
+// ModelCooling 报告该账号在**指定模型**上是否仍在冷却。
+//
+// model 为空 ⇒ 只判账号级冷却，忽略模型级（用于"不关心具体模型"的调用方，
+// 如面板展示）。
+func (a Account) ModelCooling(model string, now time.Time) bool {
+	if model == "" || len(a.ModelCooldowns) == 0 {
+		return false
+	}
+	until, ok := a.ModelCooldowns[model]
+	return ok && until.After(now)
+}
+
 // Scheduled 报告该账号当前是否可参与调度。
+//
+// ⚠️ 这是"账号级"判定（不看具体模型）。带模型的调度请用
+// ScheduledForModel —— 直接用这个会把"仅某模型被限流"的账号
+// 误判成完全不可用。
 func (s *Selector) Scheduled(a Account, now time.Time) bool {
+	return s.ScheduledForModel(a, "", now)
+}
+
+// ScheduledForModel 报告该账号在**指定模型**上是否可参与调度。
+//
+// model 为空 ⇒ 忽略模型级冷却（退回账号级判定）。
+func (s *Selector) ScheduledForModel(a Account, model string, now time.Time) bool {
 	if a.Disabled || a.Status.Normalize() == StatusDisabled {
 		return false
 	}
 	if !a.Status.Schedulable() {
 		return false
 	}
+	// 账号级冷却
 	if !a.CooldownUntil.IsZero() && a.CooldownUntil.After(now) {
+		return false
+	}
+	// 模型级冷却（2026-10-09 加账号+模型限流）
+	if a.ModelCooling(model, now) {
 		return false
 	}
 	// 额度：必须"已知"且为正
@@ -320,6 +374,19 @@ func (s *Selector) Pick(accounts []Account) (Account, error) {
 //	那是凭据跨站泄露级别的问题，不能靠"每个调用方都记得"来保证。
 //	放在选号这一步，是唯一无法绕过的地方。
 func (s *Selector) PickForPlatform(accounts []Account, plat string) (Account, error) {
+	return s.PickForModel(accounts, plat, "")
+}
+
+// PickForModel 在**指定平台 + 指定模型**下选一个账号。
+//
+// 🔴 为什么必须带 model（2026-10-09 账号+模型限流）：
+//
+//	上游限流是**按模型**的（委托方实测：DeepSeek 被限后切 glm 可用）。
+//	只按平台筛会把"仅该模型被限流"的账号也选出来，于是每次请求都
+//	撞一次 429 再换号 —— 白白消耗上游请求，面板还会闪"限流"。
+//
+// model 为空 ⇒ 忽略模型级冷却（等价于旧的按平台行为）。
+func (s *Selector) PickForModel(accounts []Account, plat, model string) (Account, error) {
 	now := s.now()
 
 	avail := make([]candidate, 0, len(accounts))
@@ -327,7 +394,7 @@ func (s *Selector) PickForPlatform(accounts []Account, plat string) (Account, er
 		if plat != "" && a.Platform != plat {
 			continue
 		}
-		if !s.Scheduled(a, now) {
+		if !s.ScheduledForModel(a, model, now) {
 			continue
 		}
 		earliest := a.EarliestExpiry()
@@ -385,8 +452,18 @@ func (s *Selector) PickExcluding(accounts []Account, exclude map[string]bool) (A
 func (s *Selector) PickExcludingForPlatform(accounts []Account,
 	exclude map[string]bool, plat string) (Account, error) {
 
+	return s.PickExcludingForModel(accounts, exclude, plat, "")
+}
+
+// PickExcludingForModel 同上，但**同时限定平台与模型**。
+//
+// 换号重试时也必须带模型：否则会重新选中"该模型正在冷却"的账号，
+// 而那正是刚刚失败的那个原因。
+func (s *Selector) PickExcludingForModel(accounts []Account,
+	exclude map[string]bool, plat, model string) (Account, error) {
+
 	if len(exclude) == 0 {
-		return s.PickForPlatform(accounts, plat)
+		return s.PickForModel(accounts, plat, model)
 	}
 	filtered := make([]Account, 0, len(accounts))
 	for _, a := range accounts {
@@ -395,7 +472,7 @@ func (s *Selector) PickExcludingForPlatform(accounts []Account,
 		}
 		filtered = append(filtered, a)
 	}
-	return s.PickForPlatform(filtered, plat)
+	return s.PickForModel(filtered, plat, model)
 }
 
 type candidate struct {

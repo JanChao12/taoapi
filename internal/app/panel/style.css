@@ -614,6 +614,18 @@ body {
 .api-meta { margin-top: 10px; font-size: 12px; color: #4a5058; }
 .api-meta b { font-weight: 600; }
 
+/* 同一张接入卡片内的分节标题（2026-10-09 委托方要求把三块并成一张卡）。
+   「支持的协议」在最上面，下面是 OpenAI / Anthropic 两个小节。
+   比 .panel h2 小一号并与上一节拉开距离 —— 同一张卡里要能看出层次，
+   但又不该像三张卡那样各带阴影（那就回到"分成三块"了）。 */
+.api-sub-title {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4a5058;
+}
+.api-sub-title:first-of-type { margin-top: 4px; }
+
 .effort-tag {
   display: inline-block;
   font-size: 11px;
@@ -688,6 +700,43 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── 按模型的限流提示（2026-10-09 加账号+模型限流）──
+   用橙色而不是红色：账号**本身是好的**（其实仍是可用状态），
+   只是个别模型在上游被限流。红色会让人以为整个号坏了 ——
+   那正是本改动要消除的误导。
+   与 .acct-err（账号级限流，真红）在视觉上明确区分。
+
+   🔴 位置与尺寸（2026-10-09 委托方要求）：
+     「正常的账号在那里显示状态正常，限流的账号那里显示限流模型，
+       这样每一个卡片的宽度大小都是一样的」
+     ⇒ 它占据**状态徽章同一个槽位**（卡头最右），不再单独占一行。
+       宽度与 .badge 同量级：padding/字号一致，超出用省略号而不是撑宽卡片
+       （.acct-head 是 flex，min-width:0 + overflow:hidden 才收得住）。
+       完整模型名与限流时间在 title 里。 */
+.acct-modellimit {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #b45309;
+  background: #fffbeb;
+  /* 🔴 必须用 inset box-shadow 画描边，**不能**用 border（2026-10-09 实测）。
+     原因：状态徽章 .badge **没有** border，所以它高 23px；
+     而 border:1px 会给这个元素加 2px ⇒ 卡头 23 → 25px，
+     被限流的卡片整张比正常卡片**高 2px**（实测 185 vs 183）。
+     委托方要求"每一个卡片的宽度大小都是一样的"，2px 的不齐肉眼可见。
+     inset shadow 不占据布局空间，因此高度与 .badge 完全一致。 */
+  box-shadow: inset 0 0 0 1px #fde68a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .acct-name {

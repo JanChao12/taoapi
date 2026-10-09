@@ -28,6 +28,47 @@ import (
 //   - 一个坏请求不该打穿所有账号，那会白耗每个号的配额
 const maxAccountAttempts = 2
 
+// rateLimitCooldown 429「上游限流」的冷却时长。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 🔴 为什么是**写死的 10 分钟**，而不是解析上游给的重置时间
+//
+//	（2026-10-09 委托方拍板，理由如下，不要再"优化"回去）
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// 上游 429 的响应体里确实带着一个重置时间，实测长这样（两处措辞并存）：
+//
+//	{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-10-09 21:24:55
+//	 UTC+8 重置，您也可以切换其他模型继续使用。"}
+//	{"code":6004,"msg":"usage exceeds frequency limit, but don't worry, your
+//	 usage will reset at 2026-10-10 00:08:52 UTC+8, alternatively, you can
+//	 switch to the other models to continue using it."}
+//
+// 委托方原话（2026-10-09）：
+//
+//	「我建议先改成写死10分钟，**因为他确实是按模型限制的，
+//	  切换其他模型可以继续用**」
+//
+// ⇒ **不能**照抄那个重置时间：它只对**被限流的那一个模型**成立
+//
+//	（实测窗口 9~17 小时，且随请求变化）。而本项目的冷却状态是
+//	**账号级**的（pool.Account.CooldownUntil）—— 照抄 9 小时等于把
+//	这个账号上**其他仍然可用的模型**一起冻住 9 小时，
+//	恰恰丢掉了上游明确提示的"切换其他模型继续用"这条退路。
+//
+// 所以取一个**短而固定**的值：足够让反复重试停下来（实测 60 秒会让
+// 同一个已限流账号一天被打 100+ 次），又不会长时间浪费其他模型。
+//
+// ⚠️ 已知的**有意简化**：冷却仍是**账号级**而非"账号+模型"级，
+//
+//	即这 10 分钟内该账号的其它模型也选不中。要做成 per-model 需要
+//	给 pool.Account 加一张状态表（新状态、新持久化、新调度判定），
+//	而当前证据只支持"上游这么说"，没有实测到"限流后换模型确实可用"。
+//	// ponytail: 账号级冷却，出现"某账号仅个别模型被限流且其余模型
+//	// 仍被调度失败"的实测证据时，再升级为 per-(账号,模型) 冷却。
+const rateLimitCooldown = 10 * time.Minute
+
 // accountChatter 是"能按指定账号发起对话"的能力。
 //
 // 抽象出来是为了让换号逻辑不依赖具体渠道包（app 不许 import workbuddy）。
@@ -139,8 +180,13 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 	for attempt := 1; attempt <= maxAccountAttempts; attempt++ {
 		// 每次重新取快照：上一个账号失败可能改了状态
 		now := nowFunc()
-		picked, err := sel.PickExcludingForPlatform(
-			store.PoolAccountsForPlatform(now, wantPlatform), attempted, wantPlatform)
+		// 🔴 按**模型**选号（2026-10-09 加账号+模型限流）。
+		//
+		//	req.Model 是上游模型 ID（chat.go 已把客户端名改写成上游 ID）。
+		//	带它才能跳过"仅这个模型被限流"的账号 —— 否则每次请求都要
+		//	先撞一次 429 再换号，白耗上游请求。
+		picked, err := sel.PickExcludingForModel(
+			store.PoolAccountsForPlatform(now, wantPlatform), attempted, wantPlatform, req.Model)
 		if err != nil {
 			if lastErr != nil {
 				break // 有更具体的错误，优先返回
@@ -181,7 +227,7 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 		sess, err := probeOnce(ctx, chatter, acct, req)
 		if err == nil {
 			// 成功：清掉上次的失败痕迹（条件提交，见 R1 说明）
-			clearAccountFailure(deps, picked.ID, baseRev)
+			clearAccountFailure(deps, picked.ID, baseRev, req.Model)
 			if attempt > 1 {
 				deps.logf("已换用账号 %s 成功", auth.MaskUID(acct.UID))
 			}
@@ -215,7 +261,7 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 			if snap2, ok := store.Snapshot(picked.ID); ok {
 				acct2 := &snap2
 				if sess2, err2 := probeOnce(ctx, chatter, acct2, req); err2 == nil {
-					clearAccountFailure(deps, picked.ID, snap2.Rev)
+					clearAccountFailure(deps, picked.ID, snap2.Rev, req.Model)
 					deps.logf("账号 %s 续期后重试成功", auth.MaskUID(picked.ID))
 					return sess2, nil
 				} else {
@@ -226,7 +272,7 @@ func TryChat(ctx context.Context, deps Deps, chatter accountChatter,
 
 		lastErr = err
 
-		if !recordAccountFailure(deps, picked.ID, baseRev, err) {
+		if !recordAccountFailure(deps, picked.ID, baseRev, req.Model, err) {
 			// 该错误换号也解决不了（如档位不支持）——立即返回
 			return nil, err
 		}
@@ -380,7 +426,13 @@ func probeStream(ctx context.Context,
 //	返回"是否应该换号重试"的语义**不因版本不匹配而改变**：
 //	换号决策依赖的是**本次错误本身**，与"回写是否被接受"无关 ——
 //	否则一次版本抖动会让本该换号的请求直接失败。
-func recordAccountFailure(deps Deps, uid string, baseRev uint64, err error) bool {
+//
+// 🔴 model（2026-10-09 加账号+模型限流）：本次请求用的**上游模型 ID**。
+//
+//	上游限流是按模型的（委托方实测：DeepSeek 被限后切 glm 可用），
+//	所以限流必须记到"这个模型"名下；只记账号级会把该账号上其他
+//	仍然可用的模型一起冻住。
+func recordAccountFailure(deps Deps, uid string, baseRev uint64, model string, err error) bool {
 	// 换号也解决不了的错误：不改账号状态（不是账号的错），直接返回
 	if isNonRetryable(err) {
 		return false
@@ -391,6 +443,34 @@ func recordAccountFailure(deps Deps, uid string, baseRev uint64, err error) bool
 
 	if deps.Accounts != nil {
 		deps.Accounts.MutateIfRev(uid, baseRev, func(a *auth.Account) bool {
+			// ── 限流：按**模型**记冷却，不冻整个账号 ──
+			//
+			// 🔴 这一段必须放在"写账号级字段"之前并提前 return：
+			//	限流不是**账号**的问题，而是"这个账号的这个模型"的问题。
+			//	把账号级 Status 也写成 rate_limited 会让面板显示"限流"，
+			//	而实际该账号对其他模型完全正常 —— 那正是本改动要消除的误导。
+			if status == pool.StatusRateLimited && model != "" {
+				until := now.Add(cooldown) // 默认 10 分钟（见 rateLimitCooldown）
+				// 优先用上游自述的重置时刻（受限时才有）
+				if resetAt, ok := rateLimitResetOf(err); ok {
+					until = clampRateLimitReset(resetAt, now)
+				}
+				if a.ModelCooldowns == nil {
+					a.ModelCooldowns = make(map[string]time.Time, 1)
+				}
+				a.ModelCooldowns[model] = until
+
+				// 账号**保持正常**：它只是"这个模型"暂时受限。
+				a.Status = pool.StatusNormal
+				// 冷却时间留空 —— 账号本身没有冷却。
+				a.StatusUntil = time.Time{}
+				// 但**要把事实说清楚**（面板要显示"哪个模型被限到几点"）。
+				a.StatusReason = "模型限流: " + model
+				a.LastError = a.StatusReason
+				a.LastObservedAt = now
+				return true
+			}
+
 			a.Status = status
 			a.StatusReason = reason
 			a.LastError = reason
@@ -404,6 +484,43 @@ func recordAccountFailure(deps Deps, uid string, baseRev uint64, err error) bool
 
 	persistAccounts(deps)
 	return shouldFailover(status)
+}
+
+// rateLimitResetOf 取出上游自述的重置时刻（可选接口，解析不到就 false）。
+//
+// 用**独立**的可选接口而不是往 IsRateLimited 那个接口里加方法：
+//
+//	那个接口有 4 处实现（failover / protocol_codec / anthropic / responses），
+//	加方法会逼着每个实现都补一个它并不关心的能力。这里只需一处能提供即可。
+func rateLimitResetOf(err error) (time.Time, bool) {
+	var r interface{ RateLimitReset() (time.Time, bool) }
+	if errors.As(err, &r) {
+		return r.RateLimitReset()
+	}
+	return time.Time{}, false
+}
+
+// rateLimitResetFloor / Ceiling 是采信上游重置时刻的**夹取区间**。
+//
+//	下界 1 分钟：上游偶尔会给出"已经过去"或"马上就到"的时刻，
+//	直接用会让账号立刻回到可用、随即又撞一次 429（抖动）。
+//	上界 7 天：防解析出垃圾（如年份写错）导致账号被冻到遥遥无期。
+//	实测真实值在 9~17 小时区间内，两个界都不影响正常情况。
+const (
+	rateLimitResetFloor   = time.Minute
+	rateLimitResetCeiling = 7 * 24 * time.Hour
+)
+
+// clampRateLimitReset 把上游给的重置时刻夹到合理区间（相对 now）。
+func clampRateLimitReset(resetAt, now time.Time) time.Time {
+	d := resetAt.Sub(now)
+	if d < rateLimitResetFloor {
+		d = rateLimitResetFloor
+	}
+	if d > rateLimitResetCeiling {
+		d = rateLimitResetCeiling
+	}
+	return now.Add(d)
 }
 
 // clearAccountFailure 在一次成功后清掉失败痕迹。
@@ -424,23 +541,44 @@ func recordAccountFailure(deps Deps, uid string, baseRev uint64, err error) bool
 //	版本不匹配就丢弃这次清除。
 //
 //	`baseRev` 必须是**发请求之前**取的基线，不能响应回来再读（见调用方说明）。
-func clearAccountFailure(deps Deps, uid string, baseRev uint64) {
+//
+// 🔴 model（2026-10-09）：本次成功的**上游模型 ID**。
+//
+//	一次成功证明"这个模型对这个账号是可用的"，所以只清**这个模型**的
+//	冷却；其他模型的限流事实不受影响（它们可能确实还在被限流）。
+//	⚠️ 这也是为什么不能清整张表：那会把别的模型的真实限流抹掉。
+func clearAccountFailure(deps Deps, uid string, baseRev uint64, model string) {
 	if deps.Accounts == nil {
 		return
 	}
 	now := nowFunc()
 	changed, _ := deps.Accounts.MutateIfRev(uid, baseRev, func(a *auth.Account) bool {
-		// 判断与写入在**同一次持锁**内 ⇒ 不会与并发写交错
-		if a.Status.Normalize() == pool.StatusNormal &&
-			a.StatusReason == "" && a.LastError == "" {
-			return false // 无变化，不落盘
+		dirty := false
+
+		// ── 该模型的冷却：一次成功即证明它可用 ──
+		if model != "" && len(a.ModelCooldowns) > 0 {
+			if _, ok := a.ModelCooldowns[model]; ok {
+				delete(a.ModelCooldowns, model)
+				if len(a.ModelCooldowns) == 0 {
+					a.ModelCooldowns = nil
+				}
+				dirty = true
+			}
 		}
-		a.Status = pool.StatusNormal
-		a.StatusReason = ""
-		a.StatusUntil = time.Time{}
-		a.LastError = ""
-		a.LastObservedAt = now
-		return true
+
+		// ── 账号级失败痕迹 ──
+		//
+		// 判断与写入在**同一次持锁**内 ⇒ 不会与并发写交错
+		if !(a.Status.Normalize() == pool.StatusNormal &&
+			a.StatusReason == "" && a.LastError == "") {
+			a.Status = pool.StatusNormal
+			a.StatusReason = ""
+			a.StatusUntil = time.Time{}
+			a.LastError = ""
+			a.LastObservedAt = now
+			dirty = true
+		}
+		return dirty
 	})
 	if changed {
 		persistAccounts(deps)
@@ -481,7 +619,7 @@ var ErrNonRetryable = errors.New("app: 该错误不可通过换号解决")
 //
 // 规则（证据优先，未知保守）：
 //
-//	限流              → rate_limited，冷却 60s
+//	限流              → rate_limited，冷却 10 分钟（见 rateLimitCooldown）
 //	401/403           → auth_expired（⚠️ 不等于封号）
 //	超时              → transient，冷却 30s
 //	档位不支持/取消    → 无冷却，且【不换号】（见 ErrNonRetryable）
@@ -507,7 +645,7 @@ func classifyFailure(err error) (pool.Status, string, time.Duration) {
 	if errors.As(err, &cls) {
 		switch {
 		case cls.IsRateLimited():
-			return pool.StatusRateLimited, "上游限流", 60 * time.Second
+			return pool.StatusRateLimited, "上游限流", rateLimitCooldown
 		case cls.IsAuthFailure():
 			// ⚠️ 401/403 不等于封号。标 auth_expired 表示"需要重新授权"。
 			//

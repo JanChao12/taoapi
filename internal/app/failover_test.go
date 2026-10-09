@@ -14,6 +14,7 @@ import (
 	"workbuddy.local/workbuddy-api/internal/auth"
 	"workbuddy.local/workbuddy-api/internal/pool"
 	"workbuddy.local/workbuddy-api/internal/provider"
+	"workbuddy.local/workbuddy-api/internal/provider/workbuddy"
 )
 
 // scriptedChatter 是一个可编排的假账号对话器。
@@ -288,26 +289,37 @@ func TestFailoverAfterStreamStartedIsImpossible(t *testing.T) {
 }
 
 // TestFailoverRecordsAccountStatus 验证失败会写入账号状态（面板要用）。
+//
+// 🔴 2026-10-09 按模型限流后：限流记在 **ModelCooldowns**（按模型），
+// 账号级状态保持正常 —— 否则该账号其他仍可用的模型会被一起挡掉。
 func TestFailoverRecordsAccountStatus(t *testing.T) {
 	deps, store := newFailoverDeps(t, "uid-a", "uid-b")
 
+	const model = "workbuddy/space-bunny"
 	chatter := newScriptedChatter()
 	chatter.set("uid-a", &acctBehavior{failWith: rateLimitedErr{}})
 	chatter.set("uid-b", &acctBehavior{events: textEvents("ok")})
 
 	sess, err := TryChat(context.Background(), deps, chatter,
-		provider.ChatRequest{Model: "workbuddy/space-bunny"})
+		provider.ChatRequest{Model: model})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
 
 	a, _ := store.Get("uid-a")
-	if a.Status != pool.StatusRateLimited {
-		t.Errorf("限流账号状态 = %q，期望 rate_limited", a.Status)
+	// 账本级：不该被标成 rate_limited（那会冻住其他模型）
+	if a.Status.Normalize() == pool.StatusRateLimited {
+		t.Errorf("限流账号状态 = %q，期望**正常**（限流按模型记，不冻整个账号）", a.Status)
 	}
-	if a.StatusUntil.IsZero() {
-		t.Error("限流应设置冷却截止时间")
+	// 模型级：冷却必须落在本次模型上
+	if len(a.ModelCooldowns) == 0 {
+		t.Error("限流应设置**模型级**冷却（ModelCooldowns），实际为空")
+	} else if until, ok := a.ModelCooldowns[model]; !ok || until.IsZero() {
+		t.Errorf("ModelCooldowns 缺少 %q，实际 %v", model, a.ModelCooldowns)
+	}
+	if !a.StatusUntil.IsZero() {
+		t.Errorf("账号级 StatusUntil = %v，期望零值（模型级限流不该设账号级冷却）", a.StatusUntil)
 	}
 	if !strings.Contains(a.StatusReason, "限流") {
 		t.Errorf("状态原因应说明是限流，实际 %q", a.StatusReason)
@@ -351,6 +363,171 @@ func TestFailoverSkipsCoolingAccountOnNextRequest(t *testing.T) {
 	}
 	if s2.Account.UID != "uid-b" {
 		t.Errorf("第二次应直接用 uid-b，实际 %v", s2.Account.UID)
+	}
+}
+
+// TestModelLimitDoesNotBlockOtherModelsOnSameAccount 是**账号+模型限流**的
+// 核心端到端护栏 —— 委托方实测要求的那个行为。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方原话（2026-10-09）：
+//
+//	「上游的限流我实测之前使用DeepSeek过多导致限制，
+//	  我切换glm后能正常使用」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// 场景：同一个账号，模型 A 被限流；再请求**模型 B** 时，
+// 该账号**必须仍然可用**（不能因为 A 被限就把整个账号跳过）。
+//
+// 这正是"账号级冷却"做不到、而"账号+模型冷却"能做到的事：
+// 旧实现会把 StatusUntil 设在账号上，于是 B 也被挡掉 ——
+// 用户明明可以切模型继续用，却被本服务拦住了。
+//
+// ⚠️ 本测试用**真实 TryChat 调用链**（不是直接调 pool），
+//
+//	所以它同时守住"模型确实被传到了选号那一步"这条接线。
+//
+// 反向对照：把 recordAccountFailure 里的模型级分支去掉
+// （退回写账号级 StatusUntil）⇒ 本测试立刻红。
+func TestModelLimitDoesNotBlockOtherModelsOnSameAccount(t *testing.T) {
+	deps, store := newFailoverDeps(t, "uid-a", "uid-b")
+
+	// uid-b 只允许成功一次（第一次换号用掉），之后让它也失败，
+	// 这样"能否用 uid-a"就成为可观察的唯一变量。
+	chatter := newScriptedChatter()
+	chatter.set("uid-a", &acctBehavior{failWith: rateLimitedErr{}})
+	chatter.set("uid-b", &acctBehavior{events: textEvents("ok")})
+
+	const limited = "workbuddy/deepseek-v4.1-flash"
+	const other = "workbuddy/glm-5.3-flash"
+
+	// ① 用 limited 模型打一次：uid-a 被限流 → 换到 uid-b 成功
+	s1, err := TryChat(context.Background(), deps, chatter,
+		provider.ChatRequest{Model: limited})
+	if err != nil {
+		t.Fatalf("第一次（限流换号）应成功: %v", err)
+	}
+	s1.Close()
+
+	// uid-a 的冷却必须记在**模型级**
+	a, _ := store.Get("uid-a")
+	if until, ok := a.ModelCooldowns[limited]; !ok || until.IsZero() {
+		t.Fatalf("限流未记到模型级（ModelCooldowns=%v）", a.ModelCooldowns)
+	}
+	// 其他模型**不该**被牵连
+	if _, ok := a.ModelCooldowns[other]; ok {
+		t.Errorf("模型 %q 被无辜牵连（它没有被限流）：%v", other, a.ModelCooldowns)
+	}
+
+	// ② 同一个账号，换**另一个模型**请求 —— uid-a 必须重新可用
+	//
+	// 让 uid-a 这次成功，以证明它确实被选中了（而不是被跳过）。
+	chatter.set("uid-a", &acctBehavior{events: textEvents("来自 uid-a 的 glm 回复")})
+
+	beforeA := chatter.callCount("uid-a")
+	s2, err := TryChat(context.Background(), deps, chatter,
+		provider.ChatRequest{Model: other})
+	if err != nil {
+		t.Fatalf("其他模型应能正常调度: %v", err)
+	}
+	defer s2.Close()
+
+	if s2.Account == nil || s2.Account.UID != "uid-a" {
+		got := "<nil>"
+		if s2.Account != nil {
+			got = s2.Account.UID
+		}
+		t.Errorf("其他模型选中 %s，期望 uid-a ——\n"+
+			"  只有 %s 被限流，该账号对 %s 仍应可用。\n"+
+			"  若这里跳过 uid-a，说明限流被记成了**账号级**冷却，"+
+			"  用户明明能切模型继续用却被本服务拦住。", got, limited, other)
+	}
+	if after := chatter.callCount("uid-a"); after != beforeA+1 {
+		t.Errorf("uid-a 对 %q 的调用次数 = %d，期望 %d（该模型未限流，应被尝试）",
+			other, after, beforeA+1)
+	}
+
+	// ③ 反向：被限流的那个模型仍然要跳过 uid-a
+	beforeA2 := chatter.callCount("uid-a")
+	s3, err := TryChat(context.Background(), deps, chatter,
+		provider.ChatRequest{Model: limited})
+	if err != nil {
+		t.Fatalf("限流模型应能换号成功: %v", err)
+	}
+	defer s3.Close()
+	if after := chatter.callCount("uid-a"); after != beforeA2 {
+		t.Errorf("被限流的模型 %q 不该再试 uid-a：之前 %d，之后 %d",
+			limited, beforeA2, after)
+	}
+}
+
+// TestUpstreamResetTimeIsUsedForModelCooldown 守：上游自述的重置时刻
+// 被真正用上（而不是永远走 10 分钟兜底）。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方 2026-10-09 第 2 轮要求（原话）：
+//
+//	「如果能实现账号+模型限流方式就可以将限制时间改为从上游获取
+//	  而不是写死的10分钟」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// 用真实抓到的中文响应体构造 429（时间戳指向 ~12 小时后），
+// 断言落盘的模型冷却 ≈ 上游给的时间，而**不是** 10 分钟。
+//
+// 反向对照：忽略 RateLimitResetAt、永远用 rateLimitCooldown ⇒ 本条红。
+func TestUpstreamResetTimeIsUsedForModelCooldown(t *testing.T) {
+	deps, store := newFailoverDeps(t, "uid-a", "uid-b")
+
+	const model = "workbuddy/deepseek-v4.1-flash"
+
+	// 上游给的重置时刻：取"现在 + 12 小时"，格式与实测完全一致
+	base := nowFunc()
+	resetAt := base.Add(12 * time.Hour)
+	body := `{"code":6004,"msg":"您的使用量已超出频率限制，将在 ` +
+		resetAt.In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02 15:04:05") +
+		` UTC+8 重置，您也可以切换其他模型继续使用。","requestId":"x"}`
+
+	parsed, ok := workbuddy.ParseRateLimitReset([]byte(body))
+	if !ok {
+		t.Fatalf("测试构造的响应体解析失败（格式应与实测一致）: %s", body)
+	}
+
+	chatter := newScriptedChatter()
+	chatter.set("uid-a", &acctBehavior{
+		failWith: &workbuddy.UpstreamError{
+			StatusCode:       429,
+			Op:               "chat",
+			BizCode:          6004,
+			BizMsg:           "您的使用量已超出频率限制",
+			RateLimitResetAt: parsed,
+		},
+	})
+	chatter.set("uid-b", &acctBehavior{events: textEvents("ok")})
+
+	s, err := TryChat(context.Background(), deps, chatter,
+		provider.ChatRequest{Model: model})
+	if err != nil {
+		t.Fatalf("应换号成功: %v", err)
+	}
+	s.Close()
+
+	a, _ := store.Get("uid-a")
+	until, has := a.ModelCooldowns[model]
+	if !has {
+		t.Fatalf("没有记下模型冷却（ModelCooldowns=%v）", a.ModelCooldowns)
+	}
+
+	// 必须接近上游给的时间（12 小时），而不是兜底的 10 分钟
+	got := until.Sub(base)
+	if got < 11*time.Hour {
+		t.Errorf("模型冷却 = %v，期望接近上游自述的 12 小时 ——\n"+
+			"  说明上游的重置时刻**没有被采用**，退化成了兜底值\n"+
+			"  （委托方明确要求「改为从上游获取而不是写死的10分钟」）。", got)
+	}
+	if got > 12*time.Hour+time.Minute {
+		t.Errorf("模型冷却 = %v，超过上游给的 12 小时 —— 不该放大上游时间", got)
 	}
 }
 
@@ -622,5 +799,72 @@ func TestClassifyNeverReturnsBanned(t *testing.T) {
 		if st == pool.StatusBanned {
 			t.Errorf("输入 %v 被标成 banned —— 当前没有足够证据支持这个判定", e)
 		}
+	}
+}
+
+// TestRateLimitCooldownIsFallbackTenMinutes 守：429 冷却是 **10 分钟兜底值**，
+// 且限流冷却走**模型级**（不冻账号）。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 决策演进（两轮，别把前一轮又改回去）：
+//
+//	第 1 轮（2026-10-09 早）委托方：「我建议先改成写死10分钟，因为
+//	  他确实是按模型限制的，切换其他模型可以继续用」
+//	  ⇒ 当时还没有 per-model 能力，只能把账号级冷却从 60 秒改成 10 分钟。
+//
+//	第 2 轮（2026-10-09 晚）委托方：「如果能实现账号+模型限流方式就可以
+//	  将限制时间改为从上游获取而不是写死的10分钟」
+//	  ⇒ 已实现 per-model，所以**优先用上游自述的重置时刻**；
+//	     10 分钟降级为**解析不到时的兜底**。
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// 所以 rateLimitCooldown 现在的语义是"兜底值"，不再是唯一值：
+// classifyFailure 仍返回它（协议层/无 model 的调用方需要某个值），
+// 而带 model 的真实路径会优先采用上游时间（见 clampRateLimitReset）。
+//
+// 反向对照：把常量改回 60s ⇒ 本条红。
+func TestRateLimitCooldownIsFallbackTenMinutes(t *testing.T) {
+	// ① classifyFailure 仍给出兜底冷却（供无 model 上下文的调用方使用）
+	st, reason, cd := classifyFailure(rateLimitedErr{})
+	if st != pool.StatusRateLimited {
+		t.Fatalf("限流状态 = %q，期望 %q", st, pool.StatusRateLimited)
+	}
+	if cd != 10*time.Minute {
+		t.Errorf("限流兜底冷却 = %v，期望 10 分钟", cd)
+	}
+	if reason == "" {
+		t.Error("原因不该为空（面板要显示）")
+	}
+
+	// ② 常量本身（防止有人改常量却让测试仍绿）
+	if rateLimitCooldown != 10*time.Minute {
+		t.Errorf("rateLimitCooldown = %v，期望 10 分钟", rateLimitCooldown)
+	}
+
+	// ③ 上游重置时刻的夹取区间必须存在且合理。
+	//
+	//	下界 1 分钟：防上游给出"已过去"的时刻导致立即恢复又撞 429（抖动）；
+	//	上界 7 天：防解析出垃圾把账号冻到遥遥无期（实测真实值 9~17 小时）。
+	if rateLimitResetFloor != time.Minute {
+		t.Errorf("rateLimitResetFloor = %v，期望 1 分钟", rateLimitResetFloor)
+	}
+	if rateLimitResetCeiling != 7*24*time.Hour {
+		t.Errorf("rateLimitResetCeiling = %v，期望 7 天", rateLimitResetCeiling)
+	}
+
+	// ④ 夹取行为：过近的时刻被抬到 1 分钟，过远的被压到 7 天。
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	if got := clampRateLimitReset(now.Add(-time.Hour), now); !got.Equal(now.Add(time.Minute)) {
+		t.Errorf("已过去的重置时刻应被抬到 +1 分钟，实际 %v", got.Sub(now))
+	}
+	if got := clampRateLimitReset(now.Add(30*24*time.Hour), now); !got.Equal(now.Add(7 * 24 * time.Hour)) {
+		t.Errorf("过远的重置时刻应被压到 +7 天，实际 %v", got.Sub(now))
+	}
+	// 合理区间内的值必须**原样保留**（不能改变上游的准确信息）
+	in := now.Add(12 * time.Hour)
+	if got := clampRateLimitReset(in, now); !got.Equal(in) {
+		t.Errorf("12 小时（实测范围内的真实值）被改动为 %v —— "+
+			"夹取只应处理越界值，不能篡改正常值", got.Sub(now))
 	}
 }

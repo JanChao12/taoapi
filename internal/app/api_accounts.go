@@ -90,6 +90,17 @@ type accountView struct {
 
 	// PlatformLabel 平台显示名（面板直接显示，不用前端再映射）。
 	PlatformLabel string `json:"platform_label"`
+
+	// ModelCooldowns 按模型的限流冷却（模型 ID → RFC3339 截止时刻）。
+	//
+	// 🔴 2026-10-09 加账号+模型限流后必须有它：
+	//	限流状态**不再体现在 Status 上**（一个模型被限流时账号对其他模型
+	//	仍正常），若面板只说"正常"，用户就完全看不到"deepseek 被限到 21:24"
+	//	这个事实 —— 那等于把新能力藏起来了。
+	//
+	// ⚠️ 只列**未过期**的（过期的限流等于没限流）。
+	// ⚠️ 不是凭据，可明文下发（与 cooldown_until 同级）。
+	ModelCooldowns map[string]string `json:"model_cooldowns,omitempty"`
 }
 
 // pkgView 是单个额度包的展示视图。
@@ -756,7 +767,31 @@ func buildAccountView(a *auth.Account, now time.Time) accountView {
 		Packages:       pkgs,
 		Platform:       a.PlatformOf(),
 		PlatformLabel:  platformLabel(a),
+		ModelCooldowns: modelCooldownsView(a.ModelCooldowns, now),
 	}
+}
+
+// modelCooldownsView 把模型冷却转成面板视图（只留未过期的）。
+//
+// 过期的**不下发**：面板显示"deepseek 被限到 10:00"而现在已经 11:00
+// 只会让用户以为还在限流（陈旧信息比没有信息更糟）。
+func modelCooldownsView(m map[string]time.Time, now time.Time) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for model, until := range m {
+		if !until.After(now) {
+			continue
+		}
+		if s := rfc3339OrEmpty(until); s != "" {
+			out[model] = s
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // platformLabel 返回平台的中文显示名。

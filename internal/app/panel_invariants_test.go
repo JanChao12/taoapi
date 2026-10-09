@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -477,6 +478,70 @@ func TestModelChartDrawsOneLinePerModel(t *testing.T) {
 	}
 }
 
+// TestChartLabelsAtLeastSeven 守：横轴日期标签**至少能显示 7 个**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方 2026-10-09 实测反馈（原话）：
+//
+//	「表格中要显示7个日期，四个太少了」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+//	原实现 `Math.ceil(n / 6)`：7 天档（n=7）算出 step=2 ⇒ 只标注
+//	下标 0/2/4/6 共 **4** 个日期 —— 正是委托方看到的那张图。
+//
+//	改成上限 7 之后：n=7 ⇒ step=1 ⇒ 7 个全标；30 天 ⇒ 7 个；365 天 ⇒ 7 个。
+//
+// 本测试从源码里**算出**该档位实际会标注几个标签（不是只看有没有写 "7"），
+// 复现原实现的算法做双向对照。
+//
+// 反向对照：把除数改回 6，本条的 n=7 档立刻红（算出 4 个）。
+func TestChartLabelsAtLeastSeven(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+	body := funcBody(t, js, "drawTrend")
+
+	// 从源码里取出 `Math.ceil(n / X)` 的 X（不写死，跟随实现）
+	re := regexp.MustCompile(`Math\.ceil\(\s*n\s*/\s*(\d+)\s*\)`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("drawTrend 里找不到 `Math.ceil(n / X)` 的标签抽样步长 —— " +
+			"写法变了，本测试已失效（请同步）")
+	}
+	div, err := strconv.Atoi(m[1])
+	if err != nil || div < 1 {
+		t.Fatalf("抽样除数解析失败: %q", m[1])
+	}
+
+	// 复现实现的抽样算法，数一数每个档位实际标注几个标签
+	countLabels := func(n int) int {
+		step := n / div
+		if n%div != 0 {
+			step++
+		}
+		if step < 1 {
+			step = 1
+		}
+		idx := []int{}
+		for i := 0; i < n; i += step {
+			idx = append(idx, i)
+		}
+		// 实现里会补上最后一个点
+		if idx[len(idx)-1] != n-1 {
+			idx = append(idx, n-1)
+		}
+		return len(idx)
+	}
+
+	// 面板的三个档位（今日 / 7 天 / 30 天）+ 总计
+	for _, n := range []int{7, 30, 365} {
+		if got := countLabels(n); got < 7 {
+			t.Errorf("%d 天档只标注 %d 个日期标签，少于 7 ——\n"+
+				"  委托方要求「表格中要显示7个日期，四个太少了」。\n"+
+				"  当前 drawTrend 用 Math.ceil(n / %d) 抽样，除数偏大。", n, got, div)
+		}
+	}
+}
+
 // TestPanelEndpointSectionStaysConcise 守 API 接入页的结构与精简度。
 //
 // 委托方两轮要求（2026-10-09）：
@@ -556,6 +621,111 @@ func TestPanelEndpointSectionStaysConcise(t *testing.T) {
 	// ⑦ 反向断言：旧的常驻协议表容器必须已删除（改名成浮层了）
 	if strings.Contains(html, "api-endpoints-title") {
 		t.Error("仍存在 api-endpoints-title —— 常驻协议表应已改为 ? 浮层")
+	}
+}
+
+// TestPanelApiSectionIsOneCardWithProtocolsFirst 守 API 页的三块在**同一张卡片**里，
+// 且「支持的协议」排在最前。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方 2026-10-09 要求（原话）：
+//
+//	「这3个放到同一个卡片中，不需要分3个卡片，支持的协议放到最上面」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// 原来「OpenAI 兼容接口」「Anthropic 兼容接口」「支持的协议」是三个独立
+// .panel（各带阴影与间距），同一件事被切成三段。
+//
+// 本测试断言**结构**（不是文案）：
+//  1. page-api 区块里只有一个 <section class="panel">
+//  2. 「支持的协议」出现在两个接口小节**之前**
+//  3. 两个接口小节用 h3.api-sub-title 做分节标题（同卡内的层次）
+//
+// 反向对照：把任一块拆回独立的 .panel，或把协议挪到下面，本条立刻红。
+func TestPanelApiSectionIsOneCardWithProtocolsFirst(t *testing.T) {
+	html := stripHTMLComments(panelAsset(t, "index.html"))
+
+	// 切出 page-api 这一页（到下一个 page- 区块为止）
+	start := strings.Index(html, `id="page-api"`)
+	if start < 0 {
+		t.Fatal("找不到 page-api")
+	}
+	// ⚠️ 只切到「模型列表」那张卡之前 —— page-api 里还有一张独立的
+	//	「模型列表」卡片，那是另一件事，不在本断言范围内（见函数注释）。
+	seg := html[start:]
+	if end := strings.Index(seg, `id="api-model-table"`); end > 0 {
+		seg = seg[:end]
+	} else {
+		t.Fatal("找不到 api-model-table —— 无法确定接入区块的结束位置，本测试已失效")
+	}
+	if cut := strings.LastIndex(seg, `<section class="panel">`); cut > 0 {
+		seg = seg[:cut]
+	}
+
+	// ① 接入信息只允许一张卡片（「模型列表」是另一张卡，不在本断言范围内）
+	if n := strings.Count(seg, `<section class="panel">`); n != 1 {
+		t.Errorf("API 接入区块里有 %d 个 <section class=\"panel\">，期望 **1** ——\n"+
+			"  委托方要求：「这3个放到同一个卡片中，不需要分3个卡片」", n)
+	}
+
+	// ② 「支持的协议」必须在最前（两个接口小节之前）
+	protoIdx := strings.Index(seg, "支持的协议")
+	openaiIdx := strings.Index(seg, "OpenAI 兼容接口")
+	anthropicIdx := strings.Index(seg, "Anthropic 兼容接口")
+	if protoIdx < 0 || openaiIdx < 0 || anthropicIdx < 0 {
+		t.Fatalf("段落缺失：协议=%d openai=%d anthropic=%d", protoIdx, openaiIdx, anthropicIdx)
+	}
+	if !(protoIdx < openaiIdx && protoIdx < anthropicIdx) {
+		t.Errorf("「支持的协议」没有排在最上面 —— 委托方要求「支持的协议放到最上面」。\n"+
+			"  位置：协议=%d OpenAI=%d Anthropic=%d", protoIdx, openaiIdx, anthropicIdx)
+	}
+
+	// ③ 同一张卡内要有两个分节标题（否则层次看不出来）
+	if n := strings.Count(seg, `class="api-sub-title"`); n != 2 {
+		t.Errorf("同卡内的分节标题有 %d 个，期望 2（OpenAI / Anthropic 各一个）", n)
+	}
+
+	// ④ 协议仍是**悬停浮层**，不是常驻平铺（委托方更早的明确要求，不许被本次改动破坏）
+	if !strings.Contains(seg, "api-help-pop") {
+		t.Error("「支持的协议」不再是 ? 悬停浮层 —— " +
+			"委托方要求它默认不显示（「放到最上面」说的是位置，不是改成常驻）")
+	}
+}
+
+// TestModelUsageTableKeepsChannelPrefix 守：模型用量表的模型名**带渠道前缀**。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方 2026-10-09 明确更正（原话）：
+//
+//	「模型用量的模型名把渠道前缀加回来，我当时只是说可以考虑剪短间隔
+//	  而不是内容」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+//	上一版把"缩减 1/3"理解成**砍名字内容**（用 shortSeriesName 去掉
+//	`workbuddy/` 前缀只留末段）—— 那是理解错了：要缩减的是**列间距**。
+//
+//	⚠️ 前缀不是装饰，它是多平台下区分同名模型的**唯一线索**：
+//	  `workbuddy/`（国内版）与 `workbuddyai/`（国际版）两边的 glm-5.3
+//	  倍率与能力都不同，去掉前缀后表里两行长得一模一样。
+//
+// 注意范围：本测试只管**模型用量统计表**（drawModels）。「API 接入」页的
+// 模型列表**仍应去前缀**（那是委托方 2026-10-06 的独立要求，另有
+// TestPanelModelIDHidesPrefix 守着）—— 两处要求不同，不要互相污染。
+//
+// 反向对照：把 drawModels 里的 esc(m.model) 改回 shortSeriesName，本条立刻红。
+func TestModelUsageTableKeepsChannelPrefix(t *testing.T) {
+	js := stripJSComments(panelAsset(t, "app.js"))
+	body := funcBody(t, js, "drawModels")
+
+	if !strings.Contains(body, "esc(m.model)") {
+		t.Error("模型用量表没有直接渲染完整模型名（esc(m.model)）——\n" +
+			"  委托方要求「模型用量的模型名把渠道前缀加回来」")
+	}
+	if strings.Contains(body, "shortSeriesName(m.model)") {
+		t.Error("模型用量表仍在用 shortSeriesName 去掉渠道前缀 ——\n" +
+			"  委托方已明确更正：「我当时只是说可以考虑剪短间隔而不是内容」")
 	}
 }
 
@@ -679,5 +849,61 @@ func TestPageSliceNeverClampsToFirstWhenEmpty(t *testing.T) {
 	if !strings.Contains(body, "Math.max(1, page)") {
 		t.Error("pageSlice 的空数据分支应原样保留用户页码（Math.max(1, page)），" +
 			"不要退回第 1 页")
+	}
+}
+
+// TestPanelLoadsAppScriptExactlyOnce 守：index.html 里每个 <script src> 只出现一次。
+//
+// ═══════════════════════════════════════════════════════════════════
+// 委托方实测反馈（2026-10-09）：
+//
+//	「我看到下一页了后我通过看其他页面再回到调用记录会刷新并回到第一页，
+//	  但是手动刷新不会回到第一页」
+//
+// ═══════════════════════════════════════════════════════════════════
+//
+// 根因：index.html 末尾把 app.js 写了**两遍**（从首个提交 170ddf5 起就在）。
+//
+//	app.js 是自执行 IIFE ⇒ 页面里跑着**两个互相独立的应用实例**，
+//	各有自己的 pagerState / 定时器 / 事件监听。实测（CDP 驱动真实 Chrome）：
+//
+//	  · 点「下一页」→ 只有实例 A 处理（renderPagerInto 有 data-bound 守卫）
+//	    ⇒ A.log.page = 2
+//	  · 切走再切回统计页 → **两个**实例都跑 pages.stats()，A 写 2、B 写 1，
+//	    后写者赢 ⇒ 页码重置回 1（委托方看到的现象）
+//	  · 点「刷新」→ 代码里有 `btn.disabled` 防重，第二个实例提前返回
+//	    ⇒ 只有一个实例执行，页码**保持** ⇒ "手动刷新和切页不一样"
+//	  · 附带：轮询定时器挂了两份，面板一直发**双倍**请求
+//
+// 因果验证（不是推断）：用 CDP 拦截面板响应、只删掉重复的那行 script，
+// 其余一切不变 ⇒ A 组（原样）页码 2→1 且切回时 2 个请求；
+// B 组（删重复）页码 2→2 且只有 1 个请求。唯一变量 ⇒ 该行即因。
+//
+// 反向对照：把重复的 <script> 加回去，本条立刻红。
+func TestPanelLoadsAppScriptExactlyOnce(t *testing.T) {
+	html := stripHTMLComments(panelAsset(t, "index.html"))
+
+	re := regexp.MustCompile(`<script[^>]*\bsrc="([^"]+)"`)
+	seen := map[string]int{}
+	for _, m := range re.FindAllStringSubmatch(html, -1) {
+		seen[m[1]]++
+	}
+	if len(seen) == 0 {
+		t.Fatal("没从 index.html 解析出任何 <script src> —— 写法变了，本测试已失效")
+	}
+
+	var dups []string
+	for src, n := range seen {
+		if n > 1 {
+			dups = append(dups, src+" ×"+itoa(n))
+		}
+	}
+	if len(dups) > 0 {
+		t.Errorf("index.html 里同一个脚本被加载多次：%s\n"+
+			"  ⇒ 若是 app.js（自执行 IIFE），页面里会有**多个互相独立的应用实例**：\n"+
+			"     各有自己的 pagerState，切页时互相覆盖 ⇒ 页码被重置回第 1 页\n"+
+			"     （而带 btn.disabled 防重的「刷新」按钮不会，于是两者表现不一致）；\n"+
+			"     轮询定时器也会挂多份 ⇒ 成倍发请求。\n"+
+			"  修法：删掉重复的那一行。", strings.Join(dups, ", "))
 	}
 }

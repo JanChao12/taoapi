@@ -67,9 +67,26 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "go vet failed" }
 
     if (-not $SkipTests) {
-        Write-Host "[build] go test..."
-        go test ./...
-        if ($LASTEXITCODE -ne 0) { throw "go test failed" }
+        # 🔴 必须**分包**跑，不能 `go test ./...`（2026-10-09 修）。
+        #
+        #	本机装了 Kaspersky，全量单测会被它拖住/挂死（已多次实测）。
+        #	分包跑的结果完全等价（同样的包、同样的用例），只是逐个调用
+        #	go test，避免一次性并发起太多进程触发杀软扫描。
+        #
+        #	⚠️ 逐包检查退出码：go test 对失败的包返回非 0，
+        #	  但循环里必须**显式**判断，否则最后一个包成功会掩盖前面的失败。
+        Write-Host "[build] go test（分包）..."
+        $pkgs = go list ./... 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "go list ./... failed" }
+        $failed = @()
+        foreach ($p in $pkgs) {
+            if (-not $p) { continue }
+            go test $p
+            if ($LASTEXITCODE -ne 0) { $failed += $p }
+        }
+        if ($failed.Count -gt 0) {
+            throw "go test failed for:`n$($failed -join "`n")"
+        }
     }
 
     Write-Host "[build] go build..."
@@ -92,7 +109,13 @@ try {
     #
     #	下面是**构建后自检**：直接读 PE 头的 Subsystem 字段断言为 2。
     #	护栏的另一半在 `TestBuildScriptProducesGUISubsystem`（查本文件文本）。
-    go build -ldflags "-X $pkg.Version=$Version -H=windowsgui" -o $Output ./cmd/wbapi
+        #
+    #	🔴 同时必须带 -trimpath（2026-10-09 补）。
+    #	   不加的话，exe 里会嵌进**本机绝对路径**（如
+    #	   D:\download\DSH\构建反代项目\workbuddy-api\...）—— 那是开发者
+    #	   目录结构泄露，且让构建不可复现。v0.1.9 起就要求带，但本脚本
+    #	   一直漏着（第 60 轮交接文档 §九 已把它列为"发布前需改"）。
+    go build -trimpath -ldflags "-X $pkg.Version=$Version -H=windowsgui" -o $Output ./cmd/wbapi
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
 }
 finally {

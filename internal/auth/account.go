@@ -109,7 +109,32 @@ type Account struct {
 	StatusReason string
 
 	// StatusUntil 冷却截止时间；零值表示无冷却。
+	//
+	// ⚠️ 这是**账号级**冷却（超时/未知故障等）。上游的 429 限流是
+	//	**按模型**的，记在 ModelCooldowns 里 —— 见那里的说明。
 	StatusUntil time.Time
+
+	// ModelCooldowns 按模型的限流冷却截止时间（模型 ID → 截止时刻）。
+	//
+	// ═══════════════════════════════════════════════════════════════════
+	// 🔴 2026-10-09 委托方实测要求（原话）：
+	//
+	//	「上游的限流我实测之前使用DeepSeek过多导致限制，
+	//	  我切换glm后能正常使用」
+	//
+	//	「如果能实现账号+模型限流方式就可以将限制时间改为从上游获取
+	//	  而不是写死的10分钟」
+	// ═══════════════════════════════════════════════════════════════════
+	//
+	// 上游 429 响应体里带着自述的重置时刻（散在中文/英文散文 msg 里），
+	// 但那个时刻**只对被限流的那一个模型成立**。所以必须按模型记：
+	// 账号 A 的 deepseek 冷却到 21:24，同时它的 glm **照常可用**。
+	//
+	// ⚠️ 只用账号级 StatusUntil 会把其他仍可用的模型一起冻住 ——
+	//	那正是上一版写死 10 分钟的原因（当时还没有 per-model 能力）。
+	//
+	// ⚠️ 必须落盘：重启后限流事实仍然成立（上游不会因为我们重启就消掉）。
+	ModelCooldowns map[string]time.Time
 
 	// LastObservedAt 最近一次观测到该账号状态的时间。
 	LastObservedAt time.Time
@@ -294,8 +319,34 @@ func (a Account) ToPool(now time.Time) pool.Account {
 		Status:        a.EffectiveStatus(now),
 		CooldownUntil: a.StatusUntil,
 		Disabled:      a.ManualDisabled,
-		Packages:      pkgs,
+		// 模型级冷却：**只保留未过期的**。
+		//
+		// 过期的留着会让 map 无限增长（每个模型一条、永不清），
+		// 而调度只看"是否 After(now)"，所以清掉是纯收益。
+		// ⚠️ 这里做拷贝而不是共享引用：ToPool 的返回值会逃逸出锁，
+		//	共享 map 就等于把可变状态交出去（违反并发红线）。
+		ModelCooldowns: activeModelCooldowns(a.ModelCooldowns, now),
+		Packages:       pkgs,
 	}
+}
+
+// activeModelCooldowns 返回**未过期**的模型冷却（新 map，不共享引用）。
+//
+// 到期即视为已恢复（与 StatusUntil 的"惰性恢复"口径一致，见 EffectiveStatus）。
+func activeModelCooldowns(m map[string]time.Time, now time.Time) map[string]time.Time {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Time, len(m))
+	for model, until := range m {
+		if until.After(now) {
+			out[model] = until
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Redact 返回 UID 的掩码形式，用于日志与面板。

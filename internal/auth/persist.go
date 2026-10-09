@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"workbuddy.local/workbuddy-api/internal/datadir"
 	"workbuddy.local/workbuddy-api/internal/storage"
@@ -44,6 +45,16 @@ type diskAcct struct {
 	CheckinDay     string     `json:"checkin_day,omitempty"`
 	CheckinAt      string     `json:"checkin_at,omitempty"`
 	Credit         diskCredit `json:"credit"`
+
+	// ModelCooldowns 按模型的限流冷却（模型 ID → RFC3339）。
+	//
+	// 🔴 必须落盘（2026-10-09 加账号+模型限流）：
+	//	上游的限流事实不会因为我们重启就消失。若不落盘，重启后
+	//	会把"已知被限流的模型"当成可用，每次请求白撞一次 429。
+	//
+	// ⚠️ 明文存（与 StatusUntil 同级）—— 模型 ID 与冷却时刻都**不是凭据**，
+	//	而面板要在不解密凭据的前提下显示"哪个模型被限流了"。
+	ModelCooldowns map[string]string `json:"model_cooldowns,omitempty"`
 
 	// ── 秘密（加密）──
 	Secrets string `json:"secrets"` // storage.envelope 的 JSON
@@ -273,8 +284,49 @@ func (p *Persister) encode(a *Account) (diskAcct, error) {
 			At:        rfc3339(a.Credit.At),
 			Packages:  a.Credit.Packages,
 		},
-		Secrets: string(envJSON),
+		ModelCooldowns: encodeModelCooldowns(a.ModelCooldowns),
+		Secrets:        string(envJSON),
 	}, nil
+}
+
+// encodeModelCooldowns 把模型冷却表转成 RFC3339 字符串表（只留未过期的）。
+//
+// ⚠️ 落盘时也做一次"清过期"：否则被限流过的模型名会**永久**留在文件里
+// （每天新增几个，一年后文件里堆一大串无意义条目）。
+func encodeModelCooldowns(m map[string]time.Time) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for model, until := range m {
+		if s := rfc3339(until); s != "" {
+			out[model] = s
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// decodeModelCooldowns 还原模型冷却表。
+//
+// 坏条目**跳过而不是报错**：单个模型名解析失败不该让整个账号加载失败
+// （那会连锁导致"账号全部消失"，比丢一条冷却严重得多）。
+func decodeModelCooldowns(m map[string]string) map[string]time.Time {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Time, len(m))
+	for model, s := range m {
+		if t := parseRFC3339(s); !t.IsZero() {
+			out[model] = t
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // decode 还原账号。
@@ -317,6 +369,7 @@ func (p *Persister) decode(da diskAcct) (*Account, error) {
 		LastError:      da.LastError,
 		CheckinDay:     da.CheckinDay,
 		CheckinAt:      parseRFC3339(da.CheckinAt),
+		ModelCooldowns: decodeModelCooldowns(da.ModelCooldowns),
 		Credit: CreditSnapshot{
 			Known:     da.Credit.Known,
 			Remaining: da.Credit.Remaining,

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -416,17 +417,35 @@ func TestRateLimitedAccountIsSwitchedAndPersisted(t *testing.T) {
 	}
 
 	// ── 关键：标记真的落盘了吗？──
+	//
+	// 🔴 2026-10-09 改为**按模型**限流后，断言点从 StatusUntil 移到了
+	//	ModelCooldowns —— 限流不再是"账号的问题"，而是"这个账号的这个
+	//	模型"的问题。委托方实测：DeepSeek 被限后切 glm 仍可用。
 	reloaded := fx.reload()
 	got, ok := reloaded.Get("uid-first")
 	if !ok {
 		t.Fatal("重新加载后 uid-first 不见了")
 	}
-	if got.Status != pool.StatusRateLimited {
-		t.Errorf("落盘状态 = %q，期望 rate_limited —— 若不落盘，"+
-			"重启后限流标记会消失、坏号立刻复活", got.Status)
+	// 落盘的模型冷却必须含**本次请求的模型**
+	if len(got.ModelCooldowns) == 0 {
+		t.Error("落盘后 ModelCooldowns 为空 —— 模型级冷却没有持久化，" +
+			"重启后会立刻再撞同一个模型的 429")
+	} else if until, has := got.ModelCooldowns["workbuddy/space-bunny"]; !has || until.IsZero() {
+		t.Errorf("ModelCooldowns 里没有本次限流的模型 workbuddy/space-bunny（实际 %v）—— "+
+			"必须按模型记，否则该账号其他可用模型会被一起冻住", got.ModelCooldowns)
 	}
-	if got.StatusUntil.IsZero() {
-		t.Error("落盘后 StatusUntil 为空 —— 冷却没有持久化，重启后无法自动恢复")
+	// 账号本身**不该**被标成限流（它只是这一个模型受限）
+	if got.Status.Normalize() == pool.StatusRateLimited {
+		t.Error("账号级状态被标成 rate_limited —— 按模型限流后，账号本身应保持正常，" +
+			"否则面板会显示误导性的「限流」，且其他模型也被挡掉")
+	}
+	if !got.StatusUntil.IsZero() {
+		t.Errorf("账号级 StatusUntil = %v，期望零值 —— 模型级限流不该设账号级冷却",
+			got.StatusUntil)
+	}
+	// 原因要能说清是哪个模型（面板展示用）
+	if !strings.Contains(got.StatusReason, "space-bunny") {
+		t.Errorf("StatusReason = %q，期望点名被限流的模型（面板要显示）", got.StatusReason)
 	}
 }
 
@@ -480,17 +499,25 @@ func TestLimiterRecoversAfterCooldown(t *testing.T) {
 // TestUpstreamStatusIsClassifiedAndRecorded 守：上游的各类错误被**分类并落盘**。
 //
 // 逐种上游异常跑一遍，断言：(a) 分类正确 (b) 真的写进磁盘 (c) 面板读得到。
+//
+// 🔴 2026-10-09 按模型限流后，**限流那一行的断言点变了**：
+//
+//	限流不再写账号级 Status/StatusUntil（那会把该账号其他仍可用的模型
+//	一起冻住），而是写 ModelCooldowns —— 所以限流用例单独走
+//	wantModelCooldown 分支，不再期待账号级状态变成 rate_limited。
 func TestUpstreamStatusIsClassifiedAndRecorded(t *testing.T) {
 	cases := []struct {
 		name         string
 		err          error
 		wantStatus   pool.Status
 		wantCooldown bool
+		// wantModelCooldown 表示限流：冷却记在**模型**上（账号级保持正常）
+		wantModelCooldown bool
 	}{
-		{"限流429", rateLimitedErr{}, pool.StatusRateLimited, true},
-		{"凭证401", authFailErr{}, pool.StatusAuthExpired, false},
-		{"超时", context.DeadlineExceeded, pool.StatusTransient, true},
-		{"未知错误", fmt.Errorf("某个没见过的东西"), pool.StatusTransient, true},
+		{"限流429", rateLimitedErr{}, pool.StatusNormal, false, true},
+		{"凭证401", authFailErr{}, pool.StatusAuthExpired, false, false},
+		{"超时", context.DeadlineExceeded, pool.StatusTransient, true, false},
+		{"未知错误", fmt.Errorf("某个没见过的东西"), pool.StatusTransient, true, false},
 	}
 
 	for _, tc := range cases {
@@ -513,8 +540,8 @@ func TestUpstreamStatusIsClassifiedAndRecorded(t *testing.T) {
 			if !ok {
 				t.Fatal("账号不见了")
 			}
-			if got.Status != tc.wantStatus {
-				t.Errorf("落盘状态 = %q，期望 %q", got.Status, tc.wantStatus)
+			if got.Status.Normalize() != tc.wantStatus {
+				t.Errorf("落盘状态 = %q，期望 %q", got.Status.Normalize(), tc.wantStatus)
 			}
 			if got.StatusReason == "" {
 				t.Error("StatusReason 为空 —— 面板无法解释'为什么异常'")
@@ -523,18 +550,33 @@ func TestUpstreamStatusIsClassifiedAndRecorded(t *testing.T) {
 				t.Error("应有冷却截止时间")
 			}
 			if !tc.wantCooldown && !got.StatusUntil.IsZero() {
-				t.Error("这类异常不该有冷却（需人工处理）")
+				t.Error("这类异常不该有账号级冷却")
+			}
+			// 限流：冷却落在模型上
+			if tc.wantModelCooldown {
+				if len(got.ModelCooldowns) == 0 {
+					t.Error("限流应记在 ModelCooldowns 上（按模型限流），实际为空")
+				} else if until, has := got.ModelCooldowns["workbuddy/space-bunny"]; !has || until.IsZero() {
+					t.Errorf("ModelCooldowns 缺少本次模型，实际 %v", got.ModelCooldowns)
+				}
+			} else if len(got.ModelCooldowns) != 0 {
+				t.Errorf("非限流错误不该产生模型冷却，实际 %v", got.ModelCooldowns)
 			}
 		})
 	}
 }
 
-// TestCoolingAccountStillSkippedAfterReload 守：**重启后**仍然跳过冷却中的账号。
+// TestCoolingAccountStillSkippedAfterReload 守：**重启后**仍然跳过被限流的模型。
 //
 // 🔴 Codex 第 52 轮指出：只说"StatusUntil 非零"太弱 ——
 //
 //	过去的时间、错误时区、错误时长都能通过。
 //	必须验证**重建 Store 与调度器后**该账号仍被跳过（这才是落盘的真正意义）。
+//
+// 🔴 2026-10-09 改为**按模型**限流后，本测试同时守住新能力的核心事实：
+//
+//	同一个账号，被限流的模型要跳过，**其他模型必须仍然可用**
+//	（委托方实测：DeepSeek 被限后切 glm 能正常使用）。
 func TestCoolingAccountStillSkippedAfterReload(t *testing.T) {
 	fx := newAccountFixture(t, []acctSpec{
 		{uid: "uid-first", total: 100, packages: []auth.PackageSnapshot{
@@ -546,36 +588,50 @@ func TestCoolingAccountStillSkippedAfterReload(t *testing.T) {
 	})
 	deps := fx.deps()
 
+	const limitedModel = "workbuddy/space-bunny"
+	const otherModel = "workbuddy/glm-5.3-flash"
+
 	chatter := newScriptedChatter()
 	chatter.set("uid-first", &acctBehavior{failWith: rateLimitedErr{}})
 	chatter.set("uid-backup", &acctBehavior{events: textEvents("ok")})
 
 	before := nowFunc()
 	sess, err := TryChat(context.Background(), deps, chatter,
-		provider.ChatRequest{Model: "workbuddy/space-bunny"})
+		provider.ChatRequest{Model: limitedModel})
 	if err != nil {
 		t.Fatalf("应换号成功: %v", err)
 	}
 	defer sess.Close()
 
-	// ── 冷却截止时间必须**合理**（未来 + 不超过 5 分钟）──
+	// ── 模型级冷却必须**合理**（未来 + 不超过限流冷却常量）──
+	//
+	// ⚠️ 上界从 rateLimitCooldown **推导**，不写死数字。
+	//	原先写死 5 分钟；2026-10-09 把限流冷却从 60 秒改成 10 分钟后
+	//	就假失败了。推导式让"改常量"不再需要同步改测试。
 	reloaded := fx.reload()
 	cooling, ok := reloaded.Get("uid-first")
 	if !ok {
 		t.Fatal("重新加载后账号不见了")
 	}
-	if cooling.StatusUntil.IsZero() {
-		t.Fatal("冷却截止时间为零 —— 落盘丢了 StatusUntil")
+	until, has := cooling.ModelCooldowns[limitedModel]
+	if !has || until.IsZero() {
+		t.Fatalf("落盘丢了模型冷却（ModelCooldowns=%v）—— 重启后无法自动恢复",
+			cooling.ModelCooldowns)
 	}
-	if !cooling.StatusUntil.After(before) {
+	if !until.After(before) {
 		t.Errorf("冷却截止时间 %v 不在未来（现在 %v）—— 时区或时长写错了",
-			cooling.StatusUntil, before)
+			until, before)
 	}
-	if d := cooling.StatusUntil.Sub(before); d > 5*time.Minute {
-		t.Errorf("冷却时长 %v 过长，期望 60s 量级", d)
+	if d := until.Sub(before); d > rateLimitCooldown {
+		t.Errorf("冷却时长 %v 超过限流冷却常量 %v —— 限流不该产生更长的冷却",
+			d, rateLimitCooldown)
+	}
+	// 账号级状态必须保持正常（限流只针对那个模型）
+	if cooling.Status.Normalize() == pool.StatusRateLimited {
+		t.Error("账号级状态被标成 rate_limited —— 按模型限流后账号本身应正常")
 	}
 
-	// ── 关键：用**重新加载的** Store 重建调度，仍应跳过它 ──
+	// ── 关键：用**重新加载的** Store 重建调度，被限模型仍应跳过 ──
 	sel := pool.NewSelector()
 	sel.SetClock(nowFunc)
 	now := nowFunc()
@@ -583,13 +639,28 @@ func TestCoolingAccountStillSkippedAfterReload(t *testing.T) {
 	for _, a := range reloaded.List() {
 		accts = append(accts, a.ToPool(now))
 	}
-	got, err := sel.PickForPlatform(accts, "cn")
+	got, err := sel.PickForModel(accts, "cn", limitedModel)
 	if err != nil {
 		t.Fatalf("应有备用号可选: %v", err)
 	}
 	if got.ID != "uid-backup" {
 		t.Errorf("重建后选中 %q，期望 uid-backup —— 冷却中的号重启后必须仍被跳过",
 			got.ID)
+	}
+
+	// ── 🔴 新能力的核心：**其他模型仍然可用** ──
+	//
+	//	这是"账号+模型限流"区别于"账号级限流"的唯一实质差别，
+	//	也是委托方实测确认过的上游行为（DeepSeek 被限 → 切 glm 可用）。
+	gotOther, err := sel.PickForModel(accts, "cn", otherModel)
+	if err != nil {
+		t.Fatalf("其他模型应有账号可调度: %v", err)
+	}
+	if gotOther.ID != "uid-first" {
+		t.Errorf("其他模型选中 %q，期望 uid-first ——\n"+
+			"  被限流的只是 %s，该账号对 %s 仍应可用且优先级不变。\n"+
+			"  若这里选到备用号，说明限流被错误地记成了**账号级**冷却。",
+			gotOther.ID, limitedModel, otherModel)
 	}
 
 	// ── 断言**账号身份与顺序**，而不是只数次数 ──
@@ -618,14 +689,18 @@ func TestCoolingAccountStillSkippedAfterReload(t *testing.T) {
 	}
 
 	// ── 冷却到期后应**恢复调度**（Codex 要求补的生命周期另一半）──
-	later := now.Add(2 * time.Minute)
+	//
+	// ⚠️ 推进量从 rateLimitCooldown **推导**（+1 分钟余量），不写死 2 分钟：
+	//	冷却改成 10 分钟后，写死的 2 分钟**还没过期**，会让本断言假失败
+	//	（"冷却到期后选中 uid-backup"——其实只是还没到期）。
+	later := now.Add(rateLimitCooldown + time.Minute)
 	selLater := pool.NewSelector()
 	selLater.SetClock(func() time.Time { return later })
 	var laterAccts []pool.Account
 	for _, a := range reloaded.List() {
 		laterAccts = append(laterAccts, a.ToPool(later))
 	}
-	back, err := selLater.PickForPlatform(laterAccts, "cn")
+	back, err := selLater.PickForModel(laterAccts, "cn", limitedModel)
 	if err != nil {
 		t.Fatalf("冷却到期后应有账号可调度: %v", err)
 	}
@@ -840,7 +915,7 @@ func TestManualDisabledIsNeverAutoCleared(t *testing.T) {
 	//	本测试关注的是"人工禁用不被覆盖"，与版本时序无关，
 	//	故取当前版本即可。
 	rev, _ := fx.store.Rev("uid-d")
-	clearAccountFailure(fx.deps(), "uid-d", rev)
+	clearAccountFailure(fx.deps(), "uid-d", rev, "deepseek-v4.1-flash")
 	after, _ := fx.store.Snapshot("uid-d")
 	if !after.ManualDisabled {
 		t.Error("clearAccountFailure 解开了人工禁用 —— 人工设置必须不被自动逻辑覆盖")

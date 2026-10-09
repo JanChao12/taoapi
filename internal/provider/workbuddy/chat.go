@@ -40,11 +40,26 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest, emit func
 	if resp.StatusCode != http.StatusOK {
 		// 读一小段用于诊断（不读全量，避免异常响应撑内存）
 		snippetBuf, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return &UpstreamError{
+
+		// 🔴 解析必须在**截断之前**（2026-10-09 加账号+模型限流时）。
+		//
+		//	`UpstreamError.Body` 走 snippet() 按**字节**截断到 300；
+		//	实测中文 429 响应体 195 字节、英文 240 字节 —— 已贴近上限。
+		//	若从截断后的字符串里正则，上游把措辞写长一点就会**静默**丢掉
+		//	时间戳，退化成默认冷却（不报错，只是行为悄悄变差）。
+		//	所以这里用**原始字节**解析。
+		errObj := &UpstreamError{
 			StatusCode: resp.StatusCode,
 			Body:       snippet(snippetBuf),
 			Op:         "chat",
 		}
+		// 429 才有重置时间；只对限流解析（别的错误体里没有这个形状）
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if at, ok := ParseRateLimitReset(snippetBuf); ok {
+				errObj.RateLimitResetAt = at
+			}
+		}
+		return errObj
 	}
 
 	return parseSSEStream(resp.Body, emit)

@@ -156,14 +156,21 @@ func TestPackagePercentClampsToValidRange(t *testing.T) {
 //
 //	「调用记录的手动刷新和打开这页的自动刷新怎么不一样」
 //
+// 后续委托方澄清了他要的行为（2026-10-09）：
+//
+//	「我要求的是回到第一页」——
+//	即两个入口都应把明细表翻回第 1 页。
+//
 // ═══════════════════════════════════════════════════════════════════
 //
-//	确实不一样 —— 切页走 pages.stats()，它**同时**调 loadUsageLog()
-//	与 loadStats()；而按钮只调 loadUsageLog()。
-//	后果：点刷新只更新下方明细表，**顶部那排卡片纹丝不动**，
-//	用户会以为刷新没生效。
+//	① 数据：切页走 pages.stats()，它**同时**调 loadUsageLog() 与 loadStats()；
+//	  而按钮原先只调 loadUsageLog() ⇒ 点刷新只更新下方明细表，
+//	  **顶部那排卡片纹丝不动**，用户会以为刷新没生效。现已统一。
 //
-// 本测试断言两者都拉两个接口。
+//	② 页码：不能再依赖"切页会重置页码"这个**偶然副作用** ——
+//	  它原本来自 index.html 把 app.js 加载两次（两个 IIFE 实例互相覆盖，
+//	  见 TestPanelLoadsAppScriptExactlyOnce）。修掉重复加载后该副作用消失，
+//	  所以在 renderUsageLog 里**显式**重置页码，两个入口行为才一致。
 func TestRefreshButtonMatchesPageSwitch(t *testing.T) {
 	js := stripJSComments(panelAsset(t, "app.js"))
 
@@ -198,5 +205,26 @@ func TestRefreshButtonMatchesPageSwitch(t *testing.T) {
 	}
 	if !strings.Contains(btnBody, "loadUsageLog()") {
 		t.Error("「刷新」按钮没有调 loadUsageLog() —— 明细不会刷新")
+	}
+
+	// ③ 页码：拉到新数据后必须显式回到第 1 页（委托方要求两个入口一致）。
+	//
+	//	断言在 renderUsageLog 里（那才是"拉了新数据"的唯一落点），
+	//	而不是依赖某个入口 —— 入口有三个（切页/刷新按钮/tick），
+	//	放在数据落点才不可能漏。
+	rIdx := strings.Index(js, "function renderUsageLog(")
+	if rIdx < 0 {
+		t.Fatal("找不到 renderUsageLog")
+	}
+	rBody := js[rIdx:]
+	if n := strings.Index(rBody, "\n  function "); n > 0 {
+		rBody = rBody[:n]
+	}
+	if !strings.Contains(rBody, "pagerState.log.page = 1") {
+		t.Error("renderUsageLog 没有把页码重置为第 1 页 ——\n" +
+			"  委托方明确要求：「我要求的是回到第一页」\n" +
+			"  （刷新 = 从头看最新的一批；且旧页码对应的内容已被新数据改变）。\n" +
+			"  ⚠️ 必须显式重置，不能依赖切页的副作用 —— 那个副作用来自\n" +
+			"     曾经重复加载 app.js（已修），不再是可靠行为。")
 	}
 }

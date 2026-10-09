@@ -52,7 +52,7 @@ func TestRecordFailureRejectedAfterReimportSameUID(t *testing.T) {
 	})
 
 	// ③ 旧请求的失败记录回来了 —— 必须被**拒绝**
-	recordAccountFailure(fx.deps(), "uid-r1", baseRev, errors.New("限流"))
+	recordAccountFailure(fx.deps(), "uid-r1", baseRev, "deepseek-v4.1-flash", errors.New("限流"))
 
 	after, _ := st.Snapshot("uid-r1")
 	if after.StatusReason != "" || after.LastError != "" || after.Status.Normalize() != pool.StatusNormal {
@@ -84,7 +84,7 @@ func TestClearFailureRejectedAfterReimportSameUID(t *testing.T) {
 	})
 
 	// 旧请求的成功回来了 —— 不得清掉新账号的异常状态
-	clearAccountFailure(fx.deps(), "uid-r1b", baseRev)
+	clearAccountFailure(fx.deps(), "uid-r1b", baseRev, "deepseek-v4.1-flash")
 
 	after, _ := st.Snapshot("uid-r1b")
 	if after.Status.Normalize() != pool.StatusRateLimited {
@@ -122,7 +122,7 @@ func TestClearFailureRejectedWhenNewerFailureExists(t *testing.T) {
 	}
 
 	// ③ 那次 chat 的成功回来了 —— 不得清掉更新的失败
-	clearAccountFailure(fx.deps(), "uid-r1c", baseRev)
+	clearAccountFailure(fx.deps(), "uid-r1c", baseRev, "deepseek-v4.1-flash")
 
 	after, _ := st.Snapshot("uid-r1c")
 	if after.Status.Normalize() != pool.StatusRateLimited || after.LastError == "" {
@@ -154,7 +154,7 @@ func TestClearFailureCommitsWhenVersionMatches(t *testing.T) {
 
 	// 之后才开始请求 ⇒ 基线与当前一致
 	baseRev, _ := st.Rev("uid-r1d")
-	clearAccountFailure(fx.deps(), "uid-r1d", baseRev)
+	clearAccountFailure(fx.deps(), "uid-r1d", baseRev, "deepseek-v4.1-flash")
 
 	after, _ := st.Snapshot("uid-r1d")
 	if after.Status.Normalize() != pool.StatusNormal || after.LastError != "" {
@@ -186,7 +186,7 @@ func TestRecordFailureStillDecidesFailoverOnStale(t *testing.T) {
 	st.Put(&auth.Account{UID: "uid-r1e", Nickname: "重导入"})
 
 	// 限流类错误 ⇒ 回写被拒，但**仍应返回"要换号"**
-	got := recordAccountFailure(fx.deps(), "uid-r1e", baseRev,
+	got := recordAccountFailure(fx.deps(), "uid-r1e", baseRev, "deepseek-v4.1-flash",
 		errors.New("429 too many requests: rate limit exceeded"))
 	if !got {
 		t.Fatal("🔴 版本不匹配时误判为「不用换号」—— " +
