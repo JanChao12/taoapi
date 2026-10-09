@@ -371,10 +371,26 @@
         esc(a.platform_label) + '</span>'
       : '';
 
-    // ── 当前反代是否用这个号（与后端调度同源，见 /api/accounts 的 in_use）──
+    // ── 当前调度会优先选它（与后端 pool.Selector 同源，见 /api/accounts 的 in_use）──
+    //
+    // 🔴 文案是「当前优先」而不是「反代使用中」（2026-10-09 委托方实测提问：
+    //	「现在使用的账号明明是 18073049545 为什么显示 19918027474 反代使用中」）。
+    //
+    //	不是算错 —— in_use 的含义是"**按调度规则，下一个请求会先选它**"
+    //	（依据：账号内最早到期日 + 当日额度，见 pool.go 的排序）。
+    //	但"反代使用中"这个措辞会被读成"流量此刻正经过它"，两者并不等价：
+    //	  · 正在跑的**流式请求**用完就完了，不会因为标记换人而改道
+    //	    （换号只在"还没写给客户端任何字节"时可能发生）
+    //	  · 所以标记指向 A、而最近几条记录是 B，是完全正常的
+    //
+    //	⇒ 改成「当前优先」并加 tooltip 说清"下一个请求会先选它"，
+    //	  避免用户拿它当"实际流量归属"来对账。
+    //	  ⚠️ 「刚才实际用了谁」要看**调用记录表** —— 那才是事实。
     var inUseHtml = a.in_use
-      ? '<span class="badge badge-inuse" title="当前反代请求会优先使用这个账号">' +
-        '⚡ 反代使用中</span>'
+      ? '<span class="badge badge-inuse" title="按调度规则，下一个请求会优先选它。' +
+        '注意：这不代表流量此刻正经过它 —— 正在进行的请求不会改道；' +
+        '实际用了哪个号请看「用量统计 → 调用记录」">' +
+        '⚡ 当前优先</span>'
       : '';
 
     return '<div class="acct-card' + (a.manual_disabled ? ' acct-card-disabled' : '')
@@ -407,9 +423,16 @@
     if (p.expired) expHtml += ' <span class="pkg-tag expired">已过期</span>';
     else if (soon) expHtml += ' <span class="pkg-tag soon">7天内到期</span>';
 
+    // 卡片空间紧，只显示剩余数；占比在「查看全部积分包」里有完整条。
+    // ⚠️ 但若总量已知，补一个小字占比 —— 否则"14"看不出是"14/500"还是"14/14"。
+    var remainTxt = esc(String(p.remain));
+    if (typeof p.percent === 'number') {
+      remainTxt += '<span class="pkg-of-mini">/' + esc(String(p.size)) + '</span>';
+    }
+
     return '<div class="pkg-row' + (p.expired ? ' pkg-row-expired' : '') + '">'
       + '<span class="pkg-name">' + esc(p.name || '未命名') + '</span>'
-      + '<span class="pkg-remain' + remainCls + '">' + esc(String(p.remain)) + '</span>'
+      + '<span class="pkg-remain' + remainCls + '">' + remainTxt + '</span>'
       + '<span class="pkg-exp">' + expHtml + '</span>'
       + '</div>';
   }
@@ -704,19 +727,55 @@
 
   function pkgModalItem(p, maxRemain) {
     var soon = !p.expired && isExpiringSoon(p.expire_at);
-    var pct = maxRemain > 0 ? Math.max(2, Math.round(p.remain / maxRemain * 100)) : 0;
+
+    // 🔴 进度条按**百分比**（剩余 / 总量），不是按积分量的相对长度。
+    //
+    //	委托方原话：「这个积分包显示条的长度应该按百分比显示，
+    //	              这个包只有 10 积分但是没使用过所以也是 100% 满长度，
+    //	              而不是按积分量显示长度」。
+    //
+    //	原实现用 `remain / maxRemain`（本账号内最大的包当分母）——
+    //	那是**相对长度**：10 积分且没用过的包会画成满格，
+    //	看起来像"额度充足"，而它其实只是"还剩 10"。
+    //
+    //	percent 由**后端算好**下发（auth.PackageSnapshot.Percent）：
+    //	  · 数字 → 真实占比
+    //	  · null → **上游未下发总量**（老数据 / 字段缺失）⇒ 显示 —，
+    //	    并退回旧的相对长度（有图总比没图好，但要标注不是占比）
+    var hasPct = (typeof p.percent === 'number');
+    var pct, barCls = '';
+    if (hasPct) {
+      pct = p.percent;
+      // 剩余少时变橙/红 —— 与"7天内到期"同一套视觉语言（越需要注意越暖）。
+      if (pct <= 10) barCls = ' pkg-bar-low';
+      else if (pct <= 30) barCls = ' pkg-bar-mid';
+    } else {
+      pct = maxRemain > 0 ? Math.max(2, Math.round(p.remain / maxRemain * 100)) : 0;
+      barCls = ' pkg-bar-unknown';
+    }
 
     var tags = '';
     if (p.expired) tags += ' <span class="pkg-tag expired">已过期</span>';
     else if (soon) tags += ' <span class="pkg-tag soon">7天内到期</span>';
 
+    // 剩余数后面补一个占比，让"10 / 100"这种一眼可读
+    var remainTxt = esc(String(p.remain));
+    if (hasPct && typeof p.size === 'number' && p.size > 0) {
+      remainTxt += '<span class="pkg-of"> / ' + esc(String(p.size)) + '</span>';
+    }
+
+    var pctTxt = hasPct
+      ? '<span class="pkg-pct">' + pct + '%</span>'
+      : '<span class="pkg-pct pkg-pct-na" title="上游未下发该包的总量，无法算占比">—</span>';
+
     return '<li>'
       + '<div class="pkg-line">'
       +   '<span class="p-name">' + esc(p.name || '未命名') + '</span>'
-      +   '<span class="p-remain">' + esc(String(p.remain)) + '</span>'
+      +   '<span class="p-remain">' + remainTxt + '</span>'
+      +   pctTxt
       +   '<span class="p-exp">到期 ' + esc(p.expire_at || '—') + tags + '</span>'
       + '</div>'
-      + '<div class="pkg-progress"><i style="width:' + pct + '%"></i></div>'
+      + '<div class="pkg-progress' + barCls + '"><i style="width:' + pct + '%"></i></div>'
       + '</li>';
   }
 
@@ -1300,23 +1359,62 @@
         (H - 8) + '" text-anchor="middle">' + esc(labels[xi]) + '</text>';
     }
 
-    // 折线（单点时画一个圆点，画不出线）
+    // 曲线（2026-10-09 委托方要求「线能不能做成曲线」）。
+    //
+    // 🔴 用 Catmull-Rom 样条转三次贝塞尔，而不是简单折线：
+    //	折线在拐点处是尖角，看趋势时要靠肉眼在脑子里连；曲线更接近
+    //	"用量随时间变化"的直觉。手写约 20 行，不引入任何图表库
+    //	（本项目零第三方依赖的硬约束）。
+    //
+    // ⚠️ 用 `C`（三次贝塞尔）而不是 `Q`：Catmull-Rom 自然对应三次。
+    // ⚠️ 控制点张力取 1/6（标准 Catmull-Rom → Bezier 转换系数）：
+    //	张力越大越"飘"，会画出数据没到过的凸起 —— 那是**失真**，
+    //	统计图绝不能美化到改变结论。1/6 是等价的数学转换，不是美化。
+    var points = [];   // points[si][pi] = {x, y}，供曲线与悬停共用
     for (var si = 0; si < series.length; si++) {
-      var sr = series[si];
-      var pts = [];
+      var row = [];
       for (var pi = 0; pi < n; pi++) {
-        var v = sr.values[pi];
-        pts.push(xAt(pi).toFixed(1) + ',' + yAt(v === undefined ? 0 : v).toFixed(1));
+        var v = series[si].values[pi];
+        row.push({ x: xAt(pi), y: yAt(v === undefined ? 0 : v) });
       }
-      if (n === 1) {
-        svg += '<circle cx="' + xAt(0).toFixed(1) + '" cy="' +
-          yAt(sr.values[0] || 0).toFixed(1) + '" r="2.5" fill="' + sr.color + '"/>';
-      } else {
-        svg += '<polyline fill="none" stroke="' + sr.color +
-          '" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" points="' +
-          pts.join(' ') + '"/>';
-      }
+      points.push(row);
     }
+
+    for (var sj = 0; sj < series.length; sj++) {
+      var pts = points[sj];
+      var col = series[sj].color;
+      if (n === 1) {
+        // 单点画不出线，只能画点（"今日"档就是这种情况）。
+        svg += '<circle cx="' + pts[0].x.toFixed(1) + '" cy="' + pts[0].y.toFixed(1) +
+          '" r="3" fill="' + col + '"/>';
+        continue;
+      }
+      svg += '<path fill="none" stroke="' + col +
+        '" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="' +
+        smoothPath(pts) + '"/>';
+    }
+    svg += '</svg>';
+
+    // ── 鼠标悬停显示数据（2026-10-09 委托方要求）──
+    //
+    // 实现要点（纯手写，无依赖）：
+    //	· 一层**透明热区** rect 覆盖绘图区，负责接 mousemove
+    //	· 就近取 x 下标（不是"必须精确指到点上"——那几乎点不中）
+    //	· 竖直参考线 + 每条线在该 x 处一个圆点 + 一个浮层列出各线数值
+    //	· 用 data-* 把几何信息带给事件处理，避免在闭包里再算一遍
+    //
+    // 🔴 热区必须**最后**插进 svg（盖在曲线上层），否则鼠标落在线上时
+    //	被曲线截获——曲线本身没有 hover 语义，会表现为"偶尔没反应"。
+    var hoverId = 'chart-hover-' + elId;
+    var hover = '<div class="chart-hover" id="' + hoverId + '" hidden></div>';
+    var hot = '';
+    for (var hi = 0; hi < n; hi++) {
+      var half = n === 1 ? plotW / 2 : plotW / (n - 1) / 2;
+      hot += '<rect x="' + (xAt(hi) - half).toFixed(1) +
+        '" y="' + padT + '" width="' + (half * 2).toFixed(1) + '" height="' + plotH +
+        '" fill="transparent" style="pointer-events:all"/>';
+    }
+    svg += '<g class="chart-hotlayer">' + hot + '</g>';
     svg += '</svg>';
 
     // 图例：多条线时必须有（否则不知道哪根是谁）。
@@ -1333,7 +1431,84 @@
       legend += '</div>';
     }
 
-    box.innerHTML = svg + legend;
+    box.innerHTML = svg + legend + hover;
+
+    bindChartHover(elId, hoverId, labels, series, W, padL, padT, plotW, plotH);
+  }
+
+  // smoothPath 把一串点转成平滑的 SVG path（Catmull-Rom → 三次贝塞尔）。
+  //
+  // 对每个点算切线控制点：c1 = p1 + (p2-p0)/6，c2 = p2 - (p3-p1)/6
+  // （端点用自身代替越界的邻居）。这就是标准的 Catmull-Rom 转 Bezier，
+  // 数学上经过**所有**原始点 —— 不改变数据，只改变点之间的连接方式。
+  function smoothPath(pts) {
+    if (pts.length < 2) return '';
+    var d = 'M' + pts[0].x.toFixed(1) + ',' + pts[0].y.toFixed(1);
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[i - 1] || pts[i];
+      var p1 = pts[i];
+      var p2 = pts[i + 1];
+      var p3 = pts[i + 2] || p2;
+      var c1x = p1.x + (p2.x - p0.x) / 6;
+      var c1y = p1.y + (p2.y - p0.y) / 6;
+      var c2x = p2.x - (p3.x - p1.x) / 6;
+      var c2y = p2.y - (p3.y - p1.y) / 6;
+      d += ' C' + c1x.toFixed(1) + ',' + c1y.toFixed(1) +
+        ' ' + c2x.toFixed(1) + ',' + c2y.toFixed(1) +
+        ' ' + p2.x.toFixed(1) + ',' + p2.y.toFixed(1);
+    }
+    return d;
+  }
+
+  // bindChartHover 给图绑定悬停：显示参考线 + 该 x 处各线的值。
+  //
+  // ⚠️ 事件绑在容器上一次（`data-bound` 守卫），每次重绘只换 innerHTML ——
+  //	否则轮询/切档重建 DOM 会累积监听器（内存泄漏 + 重复触发）。
+  function bindChartHover(elId, hoverId, labels, series, W, padL, padT, plotW, plotH) {
+    var box = document.getElementById(elId);
+    if (!box) return;
+    if (box.getAttribute('data-hover-bound')) return;
+    box.setAttribute('data-hover-bound', '1');
+
+    var fmt = function (v) {
+      var yi = Number(v) / 1e8;
+      return yi >= 0.01 ? yi.toFixed(2) + ' 亿' : String(v);
+    };
+
+    box.addEventListener('mousemove', function (ev) {
+      var tip = document.getElementById(hoverId);
+      if (!tip) return;
+      var rect = box.getBoundingClientRect();
+      if (!rect.width) return;
+      // 屏幕坐标 → viewBox 坐标（viewBox 宽度是 W，但显示宽度是 rect.width）
+      var vbX = (ev.clientX - rect.left) / rect.width * W;
+      var n = labels.length;
+      var idx = n === 1 ? 0 : Math.round((vbX - padL) / (plotW / (n - 1)));
+      if (idx < 0) idx = 0;
+      if (idx > n - 1) idx = n - 1;
+
+      var rows = '';
+      for (var i = 0; i < series.length; i++) {
+        var val = series[i].values[idx];
+        rows += '<div class="chart-tip-row"><i style="background:' + series[i].color +
+          '"></i><span class="chart-tip-name">' + esc(shortSeriesName(series[i].name)) +
+          '</span><b>' + esc(fmt(val === undefined ? 0 : val)) + '</b></div>';
+      }
+      tip.innerHTML = '<div class="chart-tip-date">' + esc(labels[idx]) + '</div>' + rows;
+      tip.hidden = false;
+
+      // 浮层跟随鼠标，但不越出容器右边界（否则会被裁掉）
+      var tipX = ev.clientX - rect.left + 14;
+      var maxX = rect.width - tip.offsetWidth - 4;
+      if (tipX > maxX) tipX = Math.max(4, ev.clientX - rect.left - tip.offsetWidth - 14);
+      tip.style.left = tipX + 'px';
+      tip.style.top = Math.max(4, ev.clientY - rect.top - 10) + 'px';
+    });
+
+    box.addEventListener('mouseleave', function () {
+      var tip = document.getElementById(hoverId);
+      if (tip) tip.hidden = true;
+    });
   }
 
   // shortSeriesName 缩短图例里的名字：模型占位最长，只取最后一段。
@@ -1634,7 +1809,23 @@
       btn.disabled = true;
       var old = btn.textContent;
       btn.textContent = '刷新中…';
-      loadUsageLog().then(function () {
+      // 🔴 必须**同时**拉明细与聚合（2026-10-09 修）。
+      //
+      //	原实现只调 loadUsageLog()，而"切到本页"走的是 pages.stats()
+      //	——那个会**同时**调 loadUsageLog() 与 loadStats()。
+      //	两者不一致的后果（委托方实测提问"手动刷新和打开这页的自动刷新
+      //	怎么不一样"）：点刷新只更新下方明细表，**顶部那排卡片
+      //	（请求次数/输入/输出/总计/积分/缓存命中率）纹丝不动** ——
+      //	用户会以为刷新没生效。
+      //
+      //	现在按钮与切页行为完全一致：两个接口都拉。
+      //	⚠️ 用 Promise.all 而不是串行 await：两个请求互不依赖，
+      //	  串行会让刷新慢一倍。
+      Promise.all([loadUsageLog(), loadStats()]).then(function () {
+        btn.disabled = false;
+        btn.textContent = old;
+      }, function () {
+        // 单个失败也要恢复按钮 —— 否则按钮永久卡在"刷新中"。
         btn.disabled = false;
         btn.textContent = old;
       });

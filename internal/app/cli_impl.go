@@ -413,9 +413,13 @@ func refreshCredits(st *auth.Store, concurrency int) {
 				a.Credit.At = now
 				a.Credit.Packages = a.Credit.Packages[:0]
 				for _, pa := range cr.Accounts {
+					// Size/Used 一起带上，理由同 applyCreditResult
+					//（面板按 剩余/总量 画进度条，缺分母就只能画相对长度）。
 					a.Credit.Packages = append(a.Credit.Packages, auth.PackageSnapshot{
 						Name:     pa.PackageName,
 						Remain:   pa.Remain,
+						Size:     pa.Size,
+						Used:     pa.Used,
 						ExpireAt: pa.ExpireAt,
 					})
 				}

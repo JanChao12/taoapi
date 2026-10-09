@@ -715,9 +715,30 @@ body {
 }
 .pkg-more:hover { text-decoration: underline; }
 
-/* 进度条（模态里的包列表用） */
+/* 进度条（模态里的包列表用）——
+   🔴 长度表示**剩余占比**（remain / Size，后端算好下发），
+   不是"相对本账号最大包"的长度（2026-10-09 委托方指出过：
+   10 积分但没用过的包被画成满格，看着像额度充足）。 */
 .pkg-progress { height: 6px; background: #eef0f3; border-radius: 3px; overflow: hidden; margin-top: 4px; }
 .pkg-progress > i { display: block; height: 100%; background: #16a34a; border-radius: 3px; }
+
+/* 剩下越少越暖色 —— 与"7天内到期"共用同一套注意力语言。 */
+.pkg-progress.pkg-bar-mid > i { background: #d97706; }
+.pkg-progress.pkg-bar-low > i { background: #dc2626; }
+/* 上游没给总量时无法算占比：条形画成灰色虚线感，
+   并且右侧百分比显示「—」，明示这不是一个占比。 */
+.pkg-progress.pkg-bar-unknown > i { background: #c7ccd3; }
+
+.pkg-of { color: #a8aeb6; font-weight: 400; }
+.pkg-of-mini { color: #c0c6cd; font-weight: 400; font-size: 11px; }
+.pkg-pct {
+  font-variant-numeric: tabular-nums;
+  color: #6b7280;
+  margin-left: 6px;
+  min-width: 34px;
+  text-align: right;
+}
+.pkg-pct-na { color: #c7ccd3; }
 
 .pkg-tag {
   display: inline-block;

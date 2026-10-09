@@ -160,8 +160,51 @@ type PackageSnapshot struct {
 
 	Remain int64
 
+	// Size 该包的**总量**（周期口径，与 Remain/Used 同源）。
+	//
+	// 🔴 为什么必须带上它（2026-10-09 委托方实测反馈）：
+	//
+	//	面板要按「剩余 / 总量」画百分比条。此前这里**只有 Remain**，
+	//	前端只能拿"本账号内最大的那个包"当分母（remain/maxRemain）——
+	//	那是**相对长度**而不是占比，于是"只有 10 积分但从未使用"的包
+	//	也画成 100% 满格，看着像"快用完了/很充足"，完全误导。
+	//
+	//	委托方原话：「这个积分包显示条的长度应该按百分比显示，
+	//	              这个包只有 10 积分但是没使用过所以也是 100% 满长度，
+	//	              而不是按积分量显示长度」。
+	//
+	//	⚠️ 0 表示**上游未下发总量**（老数据/字段缺失），
+	//	  此时前端必须退回旧行为或显示"—"，**不得**当成"总量为 0"去算。
+	Size int64
+
+	// Used 已用量（= Size - Remain，上游直接给时以它为准）。
+	//
+	// 留它是因为上游有时只给 Used 而不给 Size（见 provider 的 bill()），
+	// 有了两者就能互相校验，也能显示"已用多少"。
+	Used int64
+
 	// ExpireAt 到期日 YYYY-MM-DD（UTC+8）；空串表示上游未下发。
 	ExpireAt string
+}
+
+// Percent 返回剩余百分比（0~100）。
+//
+// 第二个返回值为 false 表示**无总量数据**（Size<=0）——
+// 调用方必须据此显示"—"或退回相对长度，不能拿 0 当分母。
+//
+// ⚠️ 与 EarliestExpiry 一样只做纯计算，不猜测上游意图。
+func (p PackageSnapshot) Percent() (int, bool) {
+	if p.Size <= 0 {
+		return 0, false
+	}
+	pct := int(p.Remain * 100 / p.Size)
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return pct, true
 }
 
 // EarliestExpiry 返回该账号最早的【有效】到期日；无则空串。

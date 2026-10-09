@@ -144,13 +144,24 @@ func (p *Provider) Credit(ctx context.Context, _ string) (provider.CreditResult,
 	}
 	var total int64
 	for _, a := range accts {
-		_, used, remain := a.bill()
+		// 🔴 用 bill() 返回的**同一个** tot，不要自己再取 a.CycleCapacitySize
+		//    （2026-10-09 修）。
+		//
+		//	bill() 有三种口径（周期字段优先 → 半周期 → 非周期），
+		//	而 a.CycleCapacitySize 只是**其中一种**来源。原实现
+		//	`_, used, remain := a.bill()` 把 tot 丢掉、再写死
+		//	`Size: a.CycleCapacitySize` —— 当上游走的是**非周期**
+		//	分支（CapacitySize）时，Size 会是 0 而 remain 正常
+		//	⇒ 面板拿不到总量，百分比条（remain/Size）全部失真。
+		//
+		//	现在 tot 与 used/remain **同源**，不可能分叉。
+		tot, used, remain := a.bill()
 		total += remain
 		out.Accounts = append(out.Accounts, provider.CreditAccount{
 			PackageName: a.PackageName,
 			Remain:      remain,
 			Used:        used,
-			Size:        a.CycleCapacitySize,
+			Size:        tot,
 			ExpireAt:    a.expireDate(),
 		})
 	}

@@ -98,6 +98,22 @@ type pkgView struct {
 	Remain   int64  `json:"remain"`
 	ExpireAt string `json:"expire_at"`
 	Expired  bool   `json:"expired"`
+
+	// Size 该包总量；0 表示上游未下发（老数据）。
+	//
+	// 🔴 面板据此画「剩余 / 总量」的百分比条。
+	//	缺它时前端只能用"账号内最大包"当分母（相对长度），
+	//	会让"10 积分但没用过"的包也显示满格 —— 委托方实测指出过。
+	Size int64 `json:"size"`
+
+	// Used 已用量。
+	Used int64 `json:"used"`
+
+	// Percent 剩余百分比（0~100）；**null 表示无总量数据**。
+	//
+	// 🔴 用指针而不是 int：0% 与"不知道"是两回事。
+	//	后端算好下发，避免前端各自处理分母为 0（口径分叉的老问题）。
+	Percent *int `json:"percent"`
 }
 
 // registerAccountAPI 注册账号管理路由（由 newMux 调用）。
@@ -699,11 +715,20 @@ func buildAccountView(a *auth.Account, now time.Time) accountView {
 
 	pkgs := make([]pkgView, 0, len(a.Credit.Packages))
 	for _, p := range a.Credit.Packages {
+		// 百分比由**后端算好**（用 PackageSnapshot.Percent，单一权威口径）。
+		// Size<=0（上游未下发总量）时留 nil ⇒ 前端显示"—"而不是编一个 0%。
+		var pct *int
+		if v, ok := p.Percent(); ok {
+			pct = &v
+		}
 		pkgs = append(pkgs, pkgView{
 			Name:     p.Name,
 			Remain:   p.Remain,
 			ExpireAt: p.ExpireAt,
 			Expired:  packageExpired(p.ExpireAt, p.Remain, now),
+			Size:     p.Size,
+			Used:     p.Used,
+			Percent:  pct,
 		})
 	}
 
@@ -767,9 +792,17 @@ func applyCreditResult(a *auth.Account, res provider.CreditResult, now time.Time
 	pkgs := make([]auth.PackageSnapshot, 0, len(res.Accounts))
 	var total int64
 	for _, p := range res.Accounts {
+		// 🔴 Size/Used 必须一起带上（2026-10-09 修）。
+		//
+		//	上游**已经给了**总量与已用量（provider.CreditAccount 有这两个
+		//	字段），但这里原来只搬 Remain/ExpireAt ⇒ 面板拿不到分母，
+		//	只能用"账号内最大包"当基准画相对长度 —— 委托方实测反馈：
+		//	「这个包只有 10 积分但是没使用过所以也是 100% 满长度」。
 		pkgs = append(pkgs, auth.PackageSnapshot{
 			Name:     p.PackageName,
 			Remain:   p.Remain,
+			Size:     p.Size,
+			Used:     p.Used,
 			ExpireAt: p.ExpireAt,
 		})
 		total += p.Remain
