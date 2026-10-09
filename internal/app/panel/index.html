@@ -284,6 +284,42 @@
             <code>/v1/messages</code>、<code>/v1/messages/count_tokens</code>、
             <code>/v1/responses</code> 同时接受 <code>x-api-key</code> 与 <code>Bearer</code>。
           </div>
+
+          <!-- 🔴 各 SDK 对 base_url 的拼接约定**不同**，这是最常见的配置错误
+               （2026-10-09 委托方提问"能不能所有协议都用同一个 /v1 基址"）。
+               实测（本机 0.1.10）：
+                 OpenAI SDK    base_url 写 .../v1  → 追加 /chat/completions ✓
+                 Anthropic SDK base_url **不带 /v1** → 追加 /v1/messages   ✓
+                 若 Anthropic 也写 .../v1 → 拼成 /v1/v1/messages → **404**
+               两边"看起来对称"的写法其实只有一个是错的，所以必须写在面板上。 -->
+          <div class="api-endpoints-title" style="margin-top:16px;">客户端 base_url 怎么填（三种协议共用一个服务，但基址不同）</div>
+          <table class="tbl">
+            <thead>
+              <tr><th>客户端 / SDK</th><th>base_url 填什么</th><th>SDK 自动追加</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>OpenAI 兼容（含 DSH）</td>
+                <td class="mono">http://127.0.0.1:4545/v1</td>
+                <td class="mono">/chat/completions</td>
+              </tr>
+              <tr>
+                <td>OpenAI Responses</td>
+                <td class="mono">http://127.0.0.1:4545/v1</td>
+                <td class="mono">/responses</td>
+              </tr>
+              <tr>
+                <td><b>Anthropic</b>（Claude Code 等）</td>
+                <td class="mono">http://127.0.0.1:4545</td>
+                <td class="mono">/v1/messages</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="hint-text" style="margin-top:8px;">
+            ⚠️ Anthropic SDK 的 base_url <b>不要带 <code>/v1</code></b> ——
+            它自己会追加，带了会拼成 <code>/v1/v1/messages</code> 而 404。
+            （Claude Code 用环境变量 <code>ANTHROPIC_BASE_URL=http://127.0.0.1:4545</code>）
+          </div>
         </div>
       </section>
 
