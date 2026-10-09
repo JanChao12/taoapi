@@ -210,8 +210,13 @@ var validUpstreamEfforts = func() map[string]bool {
 //
 // ⚠️ 「返回 0 个模型」也按失败处理：若上游改结构导致解析成空，
 //
-//	静默接受会让那 5 个补充模型**无声消失**，而我们又不会走静态兜底。
+//	静默接受会让那 5 个目录外模型**无声消失**，而用户会以为
+//	"模型就是这些"。空 == 解析异常，比空 == 真实空更可能，所以按失败报。
 //	（wild-work 也有 "v3 config empty models" 这条错误串，同样把空当失败。）
+//
+// ⚠️ 注意：按失败报**不再意味着**会有静态表兜底 —— 那张表已于
+//
+//	2026-10-09 删除（见 supplement.go 包注释）。现在就是如实少列。
 func (c *Client) fetchV3Models(ctx context.Context, cred Credential) ([]wireModel, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.V3ConfigURL(), nil)
 	if err != nil {
@@ -379,8 +384,11 @@ func (c *Client) Models(ctx context.Context, cred Credential, plat Platform) ([]
 	//   · 字段更全（15 vs 13），重叠模型取值与 /v2 实测 15/15 一致
 	//   · 但**没有 modelPromotions** ⇒ 活动仍取 /v2，故必须合并
 	//
-	// ⚠️ 失败必须降级为"只用 /v2 + 静态兜底"，绝不能整体失败 ——
+	// ⚠️ 失败必须降级为"只用 /v2 的数据"，绝不能整体失败 ——
 	//	/v3 挂了不该让整个模型目录消失。
+	//	⚠️ 原先这里还会再走一道**静态兜底表**补 5 个模型，那张表已于
+	//	  2026-10-09 按委托方要求删除（见 supplement.go 包注释）。
+	//	  现在 /v3 失败就是如实少列 —— 宁可少列，不可假列。
 	v3Models := []provider.Model{}
 	if plat == PlatformIntl {
 		if wm3, err := c.fetchV3Models(ctx, cred); err == nil {

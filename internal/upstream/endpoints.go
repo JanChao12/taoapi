@@ -52,7 +52,8 @@ const (
 	//	/v2/enterprises/personal/models 对国际版只返回 18 条（13 真实 +
 	//	5 抽象档位），**不含** deepseek-v4.1-flash、glm-5.3-flash、
 	//	kimi-k2.8-preview、gpt-6-astra、deepseek-v4.1-flash-sg 这 5 个
-	//	**能正常调用**的模型 —— 它们此前只能靠静态表兜底。
+	//	**能正常调用**的模型 —— 它们此前要靠一张手工抄录的静态表兜底
+	//	（该表已于 2026-10-09 按委托方要求删除，见 provider/workbuddy/supplement.go）。
 	//
 	//	/v3/config 返回 22 条，**包含上述 5 个**，且另有 gpt-5.3-codex
 	//	只在 /v2 里，所以正确做法是**两个端点合并**（见 models.go）。
